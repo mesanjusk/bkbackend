@@ -11,7 +11,24 @@ dotenv.config();
 connectDB();
 
 const app = express();
-app.use(cors({ origin: process.env.CLIENT_URL || true, credentials: true }));
+
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://bkfrontend.vercel.app'
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true
+  })
+);
+
 app.use(compression());
 app.use(express.json());
 
@@ -36,9 +53,15 @@ app.use('/api/expenses', require('./routes/crudRoutes')(require('./models/Expens
 app.use('/api/event-tasks', require('./routes/crudRoutes')(require('./models/EventTask'), 'teamId assignedToUserId backupUserId linkedVendorId'));
 
 const server = http.createServer(app);
+
 const io = new Server(server, {
-  cors: { origin: process.env.CLIENT_URL || '*' }
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    credentials: true
+  }
 });
+
 setIO(io);
 
 io.on('connection', (socket) => {
