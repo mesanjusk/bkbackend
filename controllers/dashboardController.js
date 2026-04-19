@@ -29,20 +29,35 @@ async function summary(req, res) {
     Team.countDocuments()
   ]);
 
-  const [{ totalAllowed = 0 } = {}, { totalActual = 0 } = {}] = await Promise.all([
-    BudgetHead.aggregate([{ $group: { _id: null, totalAllowed: { $sum: '$allowedBudget' } } }]),
+  const [allowedAgg, actualAgg] = await Promise.all([
+    BudgetHead.aggregate([{ $group: { _id: null, totalAllowed: { $sum: '$allowedBudget' }, totalExpected: { $sum: '$expectedCost' } } }]),
     Expense.aggregate([{ $group: { _id: null, totalActual: { $sum: '$amount' } } }])
+  ]);
+
+  const [latestEvent, pendingTasks, availableGuests, liveAssignments, reviewStudents, eligibleStudents] = await Promise.all([
+    Event.findOne().sort({ createdAt: -1 }),
+    EventTask.countDocuments({ status: { $ne: 'DONE' } }),
+    User.countDocuments({ eventDutyType: 'GUEST', availabilityStatus: { $in: ['AVAILABLE', 'ARRIVED_EARLY', 'EXPECTED'] } }),
+    StageAssignment.countDocuments({ status: { $in: ['CALLED', 'ON_STAGE', 'REASSIGNED'] } }),
+    Student.countDocuments({ status: 'Review Needed' }),
+    Student.countDocuments({ status: 'Eligible' })
   ]);
 
   res.json({
     roles, users, events, categories, students, stageAssignments, donations, notifications,
     budgetHeads, vendors, expenses, tasks, teams,
-    totalAllowedBudget: totalAllowed,
-    totalActualExpense: totalActual,
-    eligibleStudents: await Student.countDocuments({ status: 'Eligible' }),
-    pendingTasks: await EventTask.countDocuments({ status: { $ne: 'DONE' } }),
+    totalAllowedBudget: allowedAgg?.[0]?.totalAllowed || 0,
+    totalExpectedCost: allowedAgg?.[0]?.totalExpected || 0,
+    totalActualExpense: actualAgg?.[0]?.totalActual || 0,
+    eligibleStudents,
+    reviewStudents,
+    pendingTasks,
+    availableGuests,
+    liveAssignments,
     currentUserRole: req.user.roleId?.name || '',
-    currentUserDuty: req.user.eventDutyType || 'NONE'
+    currentUserRoleCode: req.user.roleId?.code || '',
+    currentUserDuty: req.user.eventDutyType || 'NONE',
+    latestEvent
   });
 }
 
