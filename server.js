@@ -8,7 +8,6 @@ const connectDB = require('./config/db');
 const { setIO } = require('./services/socket');
 
 dotenv.config();
-connectDB();
 
 const app = express();
 
@@ -53,23 +52,34 @@ app.use('/api/expenses', require('./routes/crudRoutes')(require('./models/Expens
 app.use('/api/event-tasks', require('./routes/crudRoutes')(require('./models/EventTask'), 'teamId assignedToUserId backupUserId linkedVendorId'));
 app.use('/api/whatsapp', require('./routes/whatsappRoutes'));
 
-const server = http.createServer(app);
+async function startServer() {
+  try {
+    await connectDB();
 
-const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    credentials: true
+    const server = http.createServer(app);
+
+    const io = new Server(server, {
+      cors: {
+        origin: allowedOrigins,
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+        credentials: true
+      }
+    });
+
+    setIO(io);
+
+    io.on('connection', (socket) => {
+      console.log('socket connected', socket.id);
+      socket.on('join-role-room', (role) => socket.join(`role:${role}`));
+      socket.on('disconnect', () => console.log('socket disconnected', socket.id));
+    });
+
+    const PORT = process.env.PORT || 5000;
+    server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+  } catch (err) {
+    console.error('Failed to start server:', err.message);
+    process.exit(1);
   }
-});
+}
 
-setIO(io);
-
-io.on('connection', (socket) => {
-  console.log('socket connected', socket.id);
-  socket.on('join-role-room', (role) => socket.join(`role:${role}`));
-  socket.on('disconnect', () => console.log('socket disconnected', socket.id));
-});
-
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+startServer();
