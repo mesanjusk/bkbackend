@@ -1,90 +1,56 @@
 const StageAssignment = require('../models/StageAssignment');
-const Student = require('../models/Student');
-const Category = require('../models/Category');
 const User = require('../models/User');
-const Notification = require('../models/Notification');
+const Category = require('../models/Category');
+const Student = require('../models/Student');
 const { emitEvent } = require('../services/socket');
 
-async function populateAssignment(id) {
-  return StageAssignment.findById(id)
-    .populate('studentId categoryId plannedAnchorId actualAnchorId plannedGuestId actualGuestId teamMemberId volunteerId');
-}
-
-async function bumpCounts(assignment, direction = 1) {
-  const ops = [];
-  if (assignment.actualAnchorId) ops.push(User.findByIdAndUpdate(assignment.actualAnchorId, { $inc: { 'stageCounts.anchorCalls': direction } }));
-  if (assignment.actualGuestId) ops.push(User.findByIdAndUpdate(assignment.actualGuestId, { $inc: { 'stageCounts.guestAwards': direction } }));
-  if (assignment.teamMemberId) ops.push(User.findByIdAndUpdate(assignment.teamMemberId, { $inc: { 'stageCounts.teamAssignments': direction } }));
-  if (assignment.volunteerId) ops.push(User.findByIdAndUpdate(assignment.volunteerId, { $inc: { 'stageCounts.volunteerAssignments': direction } }));
-  await Promise.all(ops);
-}
+const populateQ = 'studentId categoryId plannedAnchorId actualAnchorId plannedGuestId actualGuestId teamMemberId volunteerId';
 
 async function getAssignments(req, res) {
-  const docs = await StageAssignment.find()
-    .populate('studentId categoryId plannedAnchorId actualAnchorId plannedGuestId actualGuestId teamMemberId volunteerId')
-    .sort({ sequenceNo: 1 });
-  res.json(docs);
+  res.json(await StageAssignment.find().populate(populateQ).sort({ sequenceNo: 1 }));
 }
 
 async function createAssignment(req, res) {
-  const category = await Category.findById(req.body.categoryId);
+  const category = await Category.findById(req.body.categoryId).populate('preferredGuestIds');
   const payload = { ...req.body };
-  if (category && category.anchorId && !payload.plannedAnchorId) {
+  if (category?.anchorId && !payload.plannedAnchorId) {
     payload.plannedAnchorId = category.anchorId;
     payload.actualAnchorId = category.anchorId;
   }
-  if (category && category.preferredGuestIds?.length && !payload.plannedGuestId) {
-    payload.plannedGuestId = category.preferredGuestIds[0];
-    payload.actualGuestId = category.preferredGuestIds[0];
+  if (!payload.plannedGuestId && category?.preferredGuestIds?.length) {
+    payload.plannedGuestId = category.preferredGuestIds[0]._id;
+    payload.actualGuestId = category.preferredGuestIds[0]._id;
   }
   const doc = await StageAssignment.create(payload);
-  const populated = await populateAssignment(doc._id);
+  const populated = await StageAssignment.findById(doc._id).populate(populateQ);
   emitEvent('stage_assignment_updated', populated);
   res.status(201).json(populated);
 }
 
-async function generateAssignmentsFromEligible(req, res) {
-  const students = await Student.find({ status: 'Eligible' }).populate('matchedCategoryIds').sort({ createdAt: 1 });
-  const existing = await StageAssignment.find({}, 'studentId');
-  const existingIds = new Set(existing.map(x => String(x.studentId)));
-  let sequenceNo = (await StageAssignment.countDocuments()) + 1;
+async function generateFromEligible(req, res) {
+  const students = await Student.find({ status: 'Eligible' }).sort({ createdAt: 1 });
+  const categories = await Category.find().populate('preferredGuestIds');
+  const existing = await StageAssignment.countDocuments();
   const created = [];
-
+  let seq = existing + 1;
   for (const student of students) {
-    if (existingIds.has(String(student._id))) continue;
-    const category = (student.matchedCategoryIds || []).sort((a, b) => (a.sequencePriority || 0) - (b.sequencePriority || 0))[0];
-    if (!category) continue;
+    if (await StageAssignment.findOne({ studentId: student._id })) continue;
+    const cat = categories.find(c => student.matchedCategoryIds?.map(String).includes(String(c._id))) || categories[0];
+    if (!cat) continue;
     const doc = await StageAssignment.create({
-      sequenceNo: sequenceNo++,
+      sequenceNo: seq++,
       studentId: student._id,
-      categoryId: category._id,
-      plannedAnchorId: category.anchorId || null,
-      actualAnchorId: category.anchorId || null,
-      plannedGuestId: category.preferredGuestIds?.[0] || null,
-      actualGuestId: category.preferredGuestIds?.[0] || null,
+      categoryId: cat._id,
+      plannedAnchorId: cat.anchorId || null,
+      actualAnchorId: cat.anchorId || null,
+      plannedGuestId: cat.preferredGuestIds?.[0]?._id || null,
+      actualGuestId: cat.preferredGuestIds?.[0]?._id || null,
       status: 'PENDING'
     });
-    created.push(await populateAssignment(doc._id));
+    created.push(doc);
   }
-
-  emitEvent('stage_sequence_generated', { count: created.length });
-  res.json({ createdCount: created.length, assignments: created });
-}
-
-async function updateStatus(req, res) {
-  const { status } = req.body;
-  const doc = await StageAssignment.findById(req.params.id);
-  if (!doc) return res.status(404).json({ message: 'Assignment not found' });
-  const wasCompleted = doc.status === 'COMPLETED';
-  doc.status = status || doc.status;
-  doc.calledByAnchor = ['CALLED', 'ON_STAGE', 'COMPLETED'].includes(doc.status);
-  await doc.save();
-  if (!wasCompleted && doc.status === 'COMPLETED') {
-    await bumpCounts(doc, 1);
-  }
-  const populated = await populateAssignment(doc._id);
-  emitEvent('stage_assignment_updated', populated);
-  res.json(populated);
+  emitEvent('stage_assignment_updated', { generated: created.length });
+  res.json({ created: created.length });
 }
 
 async function changeGuest(req, res) {
@@ -95,33 +61,32 @@ async function changeGuest(req, res) {
   doc.changeReason = changeReason || 'Updated by senior team';
   if (doc.status === 'PENDING') doc.status = 'REASSIGNED';
   await doc.save();
-  const populated = await populateAssignment(doc._id);
-  const title = `Guest changed for ${populated.categoryId?.title || 'Category'}`;
-  const message = `${populated.studentId?.fullName || 'Student'} will now receive award from ${populated.actualGuestId?.name || 'new guest'}.`;
-  await Notification.create({
-    title,
-    message,
-    type: 'GUEST_CHANGED',
-    targetRoles: ['ANCHOR', 'SENIOR_TEAM', 'ADMIN', 'SUPER_ADMIN'],
-    readStatus: false
-  });
+  const populated = await StageAssignment.findById(doc._id).populate(populateQ);
   emitEvent('guest_changed', populated);
-  emitEvent('anchor_popup', { assignmentId: populated._id, title, message, categoryId: populated.categoryId?._id });
+  emitEvent('anchor_popup', {
+    assignmentId: populated._id,
+    title: `Guest changed for ${populated.categoryId?.title || 'Category'}`,
+    message: `New guest assigned for sequence ${populated.sequenceNo}`
+  });
+  res.json(populated);
+}
+
+async function updateStatus(req, res) {
+  const doc = await StageAssignment.findById(req.params.id);
+  if (!doc) return res.status(404).json({ message: 'Assignment not found' });
+  doc.status = req.body.status || doc.status;
+  if (doc.status === 'CALLED') doc.calledByAnchor = true;
+  await doc.save();
+  const populated = await StageAssignment.findById(doc._id).populate(populateQ);
+  emitEvent('stage_assignment_updated', populated);
   res.json(populated);
 }
 
 async function liveBoard(req, res) {
-  const [assignments, guests, anchors] = await Promise.all([
-    StageAssignment.find().populate('studentId categoryId actualGuestId actualAnchorId teamMemberId volunteerId').sort({ sequenceNo: 1 }),
-    User.find({ eventDutyType: 'GUEST' }).populate('roleId').sort({ name: 1 }),
-    User.find({ eventDutyType: 'ANCHOR' }).populate('roleId').sort({ name: 1 })
-  ]);
-  res.json({
-    assignments,
-    current: assignments.find(x => ['CALLED', 'ON_STAGE'].includes(x.status)) || assignments.find(x => x.status === 'PENDING') || null,
-    guests,
-    anchors
-  });
+  const queue = await StageAssignment.find().populate(populateQ).sort({ sequenceNo: 1 });
+  const current = queue.find((q) => ['CALLED','ON_STAGE','REASSIGNED'].includes(q.status)) || queue.find((q) => q.status === 'PENDING') || null;
+  const guests = await User.find({ eventDutyType: 'GUEST' }).sort({ name: 1 });
+  res.json({ current, queue, guests });
 }
 
-module.exports = { getAssignments, createAssignment, generateAssignmentsFromEligible, updateStatus, changeGuest, liveBoard };
+module.exports = { getAssignments, createAssignment, generateFromEligible, changeGuest, updateStatus, liveBoard };

@@ -51,6 +51,7 @@ app.use('/api/budget-heads', require('./routes/crudRoutes')(require('./models/Bu
 app.use('/api/vendors', require('./routes/crudRoutes')(require('./models/Vendor'), 'budgetHeadId responsibleTeamId responsibleUserId'));
 app.use('/api/expenses', require('./routes/crudRoutes')(require('./models/Expense'), 'budgetHeadId vendorId paidByUserId approvedByUserId'));
 app.use('/api/event-tasks', require('./routes/crudRoutes')(require('./models/EventTask'), 'teamId assignedToUserId backupUserId linkedVendorId'));
+app.use('/api/whatsapp', require('./routes/whatsappRoutes'));
 
 const server = http.createServer(app);
 
