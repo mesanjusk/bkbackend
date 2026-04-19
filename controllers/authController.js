@@ -1,20 +1,78 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-function generateToken(id) {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+function generateDbToken(id) {
+  return jwt.sign({ id, type: 'db-user' }, process.env.JWT_SECRET, {
+    expiresIn: '7d'
+  });
+}
+
+function generateBootstrapToken() {
+  return jwt.sign(
+    {
+      id: 'hardcoded-super-admin',
+      username: process.env.BOOTSTRAP_USERNAME || 'sanju',
+      type: 'bootstrap-user',
+      isHardcoded: true,
+      role: 'SUPER_ADMIN'
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
 }
 
 async function login(req, res) {
   const { username, password } = req.body;
+
+  const bootstrapUsername = process.env.BOOTSTRAP_USERNAME || 'sanju';
+  const bootstrapPassword = process.env.BOOTSTRAP_PASSWORD || 'sanju';
+
+  // Temporary hardcoded bootstrap login
+  if (username === bootstrapUsername && password === bootstrapPassword) {
+    return res.json({
+      token: generateBootstrapToken(),
+      user: {
+        _id: 'hardcoded-super-admin',
+        name: 'Sanju',
+        username: bootstrapUsername,
+        mobile: '',
+        email: '',
+        isActive: true,
+        isHardcoded: true,
+        eventDutyType: 'SUPER_ADMIN',
+        availabilityStatus: 'AVAILABLE',
+        stageCounts: {
+          anchorCalls: 0,
+          guestAwards: 0,
+          volunteerAssignments: 0,
+          teamAssignments: 0
+        },
+        roleId: {
+          _id: 'hardcoded-role-super-admin',
+          name: 'Super Admin',
+          code: 'SUPER_ADMIN',
+          permissions: ['*']
+        }
+      }
+    });
+  }
+
   const user = await User.findOne({ username }).populate('roleId');
-  if (!user) return res.status(401).json({ message: 'Invalid username or password' });
+  if (!user) {
+    return res.status(401).json({ message: 'Invalid username or password' });
+  }
+
+  if (!user.isActive) {
+    return res.status(403).json({ message: 'User account is inactive' });
+  }
 
   const ok = await user.matchPassword(password);
-  if (!ok) return res.status(401).json({ message: 'Invalid username or password' });
+  if (!ok) {
+    return res.status(401).json({ message: 'Invalid username or password' });
+  }
 
   res.json({
-    token: generateToken(user._id),
+    token: generateDbToken(user._id),
     user
   });
 }
