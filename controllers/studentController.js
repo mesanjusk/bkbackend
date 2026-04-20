@@ -4,83 +4,176 @@ const WhatsAppMessage = require('../models/WhatsAppMessage');
 const Notification = require('../models/Notification');
 const { doesMatch, getCalculatedPercentage } = require('../services/matchService');
 const { emitEvent } = require('../services/socket');
+const { sendTemplateMessage, sendTextMessage } = require('../services/whatsappService');
 
-function calculatePercentIfNeeded(payload) {
+function getBoardFromCategory(category) {
+  if (!category) return '';
+  if (category.board) return category.board;
+  const title = String(category.title || '').toUpperCase();
+  if (title.includes('CBSE')) return 'CBSE';
+  if (title.includes('STATE')) return 'STATE BOARD';
+  return '';
+}
+
+function calculatePercentIfNeeded(payload, categoryBoard = '') {
   const next = { ...payload };
+  const boardForCalc = String(next.board || categoryBoard || '').toUpperCase();
+
   if ((!next.percentage || Number(next.percentage) === 0) && Array.isArray(next.subjects) && next.subjects.length) {
     next.percentage = Number(
       getCalculatedPercentage(next, {
-        calculationMethod: next.board === 'CBSE' ? 'BEST_5' : 'DIRECT_PERCENTAGE',
+        calculationMethod: boardForCalc === 'CBSE' ? 'BEST_5' : 'DIRECT_PERCENTAGE',
         bestOfCount: 5
       }).toFixed(2)
     );
   }
+
   return next;
 }
 
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
+
   const editLink = `${process.env.CLIENT_URL || 'https://bkfrontend.vercel.app'}/student-edit/${student.publicEditToken}`;
+
+  await sendTemplateMessage({
+    to: student.mobile,
+    templateName: 'bk_awards',
+    languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+    bodyParameters: [student.fullName]
+  });
 
   await WhatsAppMessage.create({
     to: student.mobile,
-    bodyText:
-      `Dear ${student.fullName}, your registration has been submitted successfully.\n` +
-      `You can edit your form anytime using this link:\n${editLink}`,
-    templateName: 'student_registration_confirmation',
+    templateName: 'bk_awards',
+    messageType: 'TEMPLATE',
+    status: 'SENT',
+    relatedEntityType: 'Student',
+    relatedEntityId: String(student._id),
+    bodyText: `Hello ${student.fullName}, Your Registration for BK Scholar Awards 2026 has been successfully submitted. We will share further updates with you on WhatsApp. Badte Kadam, Gondia`
+  });
+
+  await sendTextMessage({
+    to: student.mobile,
+    body:
+      `Your secure edit link for BK Scholar Awards 2026:\n${editLink}\n\n` +
+      `Use this link only if you want to update your form later.`
+  });
+
+  await WhatsAppMessage.create({
+    to: student.mobile,
+    templateName: 'student_edit_link',
     messageType: 'TEXT',
     status: 'SENT',
     relatedEntityType: 'Student',
-    relatedEntityId: String(student._id)
+    relatedEntityId: String(student._id),
+    bodyText: `Secure edit link shared to ${student.fullName}`
   });
 
   await Notification.create({
     title: 'Student confirmation sent',
-    message: `Registration confirmation queued for ${student.fullName}`,
+    message: `Registration confirmation sent for ${student.fullName}`,
     type: 'WHATSAPP',
     targetRoles: ['ADMIN', 'SENIOR_TEAM']
   });
 
   student.whatsappConfirmationSentAt = new Date();
   await student.save();
+
   emitEvent('whatsapp_message_logged', { to: student.mobile, studentId: student._id });
 }
 
+async function getPublicCategories(req, res) {
+  const docs = await Category.find({ isActive: true })
+    .select('_id title board className minPercentage')
+    .sort({ createdAt: -1 });
+
+  res.json(docs);
+}
+
 async function getStudents(req, res) {
-  const docs = await Student.find().populate('matchedCategoryIds').sort({ createdAt: -1 });
+  const docs = await Student.find()
+    .populate('matchedCategoryIds')
+    .populate('categoryId')
+    .sort({ createdAt: -1 });
   res.json(docs);
 }
 
 async function createStudent(req, res) {
-  const payload = calculatePercentIfNeeded(req.body);
+  let category = null;
+  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+    category = await Category.findById(req.body.categoryId);
+  }
+
+  const board = getBoardFromCategory(category);
+  const payload = calculatePercentIfNeeded(
+    {
+      ...req.body,
+      board,
+      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
+    },
+    board
+  );
+
   const doc = await Student.create(payload);
   emitEvent('student_form_submitted', { studentId: doc._id, fullName: doc.fullName });
   res.status(201).json(doc);
 }
 
 async function createPublicStudent(req, res) {
-  const payload = calculatePercentIfNeeded(req.body);
+  let category = null;
+  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+    category = await Category.findById(req.body.categoryId);
+  }
+
+  const board = getBoardFromCategory(category);
+  const payload = calculatePercentIfNeeded(
+    {
+      ...req.body,
+      board,
+      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
+    },
+    board
+  );
+
   const doc = await Student.create(payload);
   await queueStudentConfirmation(doc);
+
   emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
 
-  const editLink = `${process.env.CLIENT_URL || 'https://bkfrontend.vercel.app'}/student-edit/${doc.publicEditToken}`;
   res.status(201).json({
-    message: 'Registration submitted successfully',
-    studentId: doc._id,
-    editToken: doc.publicEditToken,
-    editLink
+    message: 'Registration submitted successfully'
   });
 }
 
 async function getPublicStudentByToken(req, res) {
-  const doc = await Student.findOne({ publicEditToken: req.params.token }).populate('matchedCategoryIds');
+  const doc = await Student.findOne({ publicEditToken: req.params.token })
+    .populate('matchedCategoryIds')
+    .populate('categoryId');
+
   if (!doc) return res.status(404).json({ message: 'Student form not found' });
   res.json(doc);
 }
 
 async function updatePublicStudentByToken(req, res) {
-  const payload = calculatePercentIfNeeded(req.body);
+  let category = null;
+  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+    category = await Category.findById(req.body.categoryId);
+  } else {
+    const existing = await Student.findOne({ publicEditToken: req.params.token }).populate('categoryId');
+    category = existing?.categoryId || null;
+  }
+
+  const board = getBoardFromCategory(category);
+  const payload = calculatePercentIfNeeded(
+    {
+      ...req.body,
+      board,
+      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
+    },
+    board
+  );
+
   if (payload.studentPhotoUrl && !payload.certificatePhotoUrl) {
     payload.certificatePhotoUrl = payload.studentPhotoUrl;
   }
@@ -89,32 +182,61 @@ async function updatePublicStudentByToken(req, res) {
     { publicEditToken: req.params.token },
     payload,
     { new: true, runValidators: true }
-  ).populate('matchedCategoryIds');
+  )
+    .populate('matchedCategoryIds')
+    .populate('categoryId');
 
   if (!doc) return res.status(404).json({ message: 'Student form not found' });
+
   emitEvent('student_public_updated', { studentId: doc._id, fullName: doc.fullName });
   res.json(doc);
 }
 
 async function updateStudent(req, res) {
-  const payload = calculatePercentIfNeeded(req.body);
-  const doc = await Student.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true }).populate('matchedCategoryIds');
+  let category = null;
+  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+    category = await Category.findById(req.body.categoryId);
+  } else {
+    const existing = await Student.findById(req.params.id).populate('categoryId');
+    category = existing?.categoryId || null;
+  }
+
+  const board = getBoardFromCategory(category);
+  const payload = calculatePercentIfNeeded(
+    {
+      ...req.body,
+      board,
+      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
+    },
+    board
+  );
+
+  const doc = await Student.findByIdAndUpdate(req.params.id, payload, {
+    new: true,
+    runValidators: true
+  })
+    .populate('matchedCategoryIds')
+    .populate('categoryId');
+
   if (!doc) return res.status(404).json({ message: 'Student not found' });
   res.json(doc);
 }
 
 async function parseStudent(req, res) {
-  const student = await Student.findById(req.params.id);
+  const student = await Student.findById(req.params.id).populate('categoryId');
   if (!student) return res.status(404).json({ message: 'Student not found' });
 
   student.status = 'Processing';
-  student.rawExtractedText = student.rawExtractedText || `Parsed placeholder for ${student.fullName} / ${student.board} / ${student.className}`;
+  student.rawExtractedText =
+    student.rawExtractedText ||
+    `Parsed placeholder for ${student.fullName} / ${student.board} / ${student.className}`;
   student.extractionConfidence = student.extractionConfidence || 0.91;
 
+  const board = getBoardFromCategory(student.categoryId);
   if ((!student.percentage || student.percentage === 0) && Array.isArray(student.subjects) && student.subjects.length) {
     student.percentage = Number(
       getCalculatedPercentage(student, {
-        calculationMethod: student.board === 'CBSE' ? 'BEST_5' : 'DIRECT_PERCENTAGE',
+        calculationMethod: String(board).toUpperCase() === 'CBSE' ? 'BEST_5' : 'DIRECT_PERCENTAGE',
         bestOfCount: 5
       }).toFixed(2)
     );
@@ -126,7 +248,7 @@ async function parseStudent(req, res) {
 }
 
 async function evaluateStudent(req, res) {
-  const student = await Student.findById(req.params.id);
+  const student = await Student.findById(req.params.id).populate('categoryId');
   if (!student) return res.status(404).json({ message: 'Student not found' });
 
   const categories = await Category.find({ isActive: true });
@@ -136,12 +258,21 @@ async function evaluateStudent(req, res) {
   student.status = matched.length ? 'Eligible' : 'Review Needed';
   await student.save();
 
-  const updated = await Student.findById(student._id).populate('matchedCategoryIds');
-  emitEvent('student_eligible', { studentId: updated._id, matchedCount: matched.length, status: updated.status });
+  const updated = await Student.findById(student._id)
+    .populate('matchedCategoryIds')
+    .populate('categoryId');
+
+  emitEvent('student_eligible', {
+    studentId: updated._id,
+    matchedCount: matched.length,
+    status: updated.status
+  });
+
   res.json(updated);
 }
 
 module.exports = {
+  getPublicCategories,
   getStudents,
   createStudent,
   createPublicStudent,

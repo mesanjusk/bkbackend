@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { protect } = require('../middleware/auth');
 const {
+  getPublicCategories,
   getStudents,
   createStudent,
   createPublicStudent,
@@ -11,6 +12,7 @@ const {
   evaluateStudent
 } = require('../controllers/studentController');
 
+router.get('/public-categories', getPublicCategories);
 router.post('/public-register', createPublicStudent);
 router.get('/public-edit/:token', getPublicStudentByToken);
 router.put('/public-edit/:token', updatePublicStudentByToken);
