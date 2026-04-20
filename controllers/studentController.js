@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Student = require('../models/Student');
 const Category = require('../models/Category');
 const WhatsAppMessage = require('../models/WhatsAppMessage');
@@ -31,10 +32,40 @@ function calculatePercentIfNeeded(payload, categoryBoard = '') {
   return next;
 }
 
+function normalizeStudentPayload(body, board = '') {
+  const payload = {
+    ...body,
+    board,
+    resultImageUrl: body.resultImageUrl || body.marksheetFileUrl || ''
+  };
+
+  if (payload.categoryId === 'OTHER' || payload.categoryId === '') {
+    payload.categoryId = null;
+    payload.categoryOther = String(payload.categoryOther || 'OTHER').trim();
+  } else if (payload.categoryId) {
+    if (!mongoose.Types.ObjectId.isValid(payload.categoryId)) {
+      const error = new Error('Invalid categoryId');
+      error.statusCode = 400;
+      throw error;
+    }
+  } else {
+    payload.categoryId = null;
+  }
+
+  if (!payload.categoryOther) {
+    payload.categoryOther = '';
+  }
+
+  if (payload.studentPhotoUrl && !payload.certificatePhotoUrl) {
+    payload.certificatePhotoUrl = payload.studentPhotoUrl;
+  }
+
+  return calculatePercentIfNeeded(payload, board);
+}
+
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
-  
   const editLink = `${process.env.CLIENT_URL || 'https://bkawards.instify.in'}/student-edit/${student.publicEditToken}`;
 
   await sendTemplateMessage({
@@ -97,179 +128,198 @@ async function getStudents(req, res) {
     .populate('matchedCategoryIds')
     .populate('categoryId')
     .sort({ createdAt: -1 });
+
   res.json(docs);
 }
 
 async function createStudent(req, res) {
-  let category = null;
-  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
-    category = await Category.findById(req.body.categoryId);
+  try {
+    let category = null;
+
+    if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+      category = await Category.findById(req.body.categoryId);
+    }
+
+    const board = getBoardFromCategory(category);
+    const payload = normalizeStudentPayload(req.body, board);
+
+    const doc = await Student.create(payload);
+    emitEvent('student_form_submitted', { studentId: doc._id, fullName: doc.fullName });
+
+    res.status(201).json(doc);
+  } catch (error) {
+    console.error('createStudent error:', error);
+    res.status(error.statusCode || 500).json({
+      message: error.message || 'Failed to create student'
+    });
   }
-
-  const board = getBoardFromCategory(category);
-  const payload = calculatePercentIfNeeded(
-    {
-      ...req.body,
-      board,
-      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
-    },
-    board
-  );
-
-  const doc = await Student.create(payload);
-  emitEvent('student_form_submitted', { studentId: doc._id, fullName: doc.fullName });
-  res.status(201).json(doc);
 }
 
 async function createPublicStudent(req, res) {
-  let category = null;
-  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
-    category = await Category.findById(req.body.categoryId);
+  try {
+    let category = null;
+
+    if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+      category = await Category.findById(req.body.categoryId);
+    }
+
+    const board = getBoardFromCategory(category);
+    const payload = normalizeStudentPayload(req.body, board);
+
+    const doc = await Student.create(payload);
+    await queueStudentConfirmation(doc);
+
+    emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
+
+    res.status(201).json({
+      message: 'Registration submitted successfully'
+    });
+  } catch (error) {
+    console.error('createPublicStudent error:', error);
+    res.status(error.statusCode || 500).json({
+      message: error.message || 'Failed to submit registration'
+    });
   }
-
-  const board = getBoardFromCategory(category);
-  const payload = calculatePercentIfNeeded(
-    {
-      ...req.body,
-      board,
-      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
-    },
-    board
-  );
-
-  const doc = await Student.create(payload);
-  await queueStudentConfirmation(doc);
-
-  emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
-
-  res.status(201).json({
-    message: 'Registration submitted successfully'
-  });
 }
 
 async function getPublicStudentByToken(req, res) {
-  const doc = await Student.findOne({ publicEditToken: req.params.token })
-    .populate('matchedCategoryIds')
-    .populate('categoryId');
+  try {
+    const doc = await Student.findOne({ publicEditToken: req.params.token })
+      .populate('matchedCategoryIds')
+      .populate('categoryId');
 
-  if (!doc) return res.status(404).json({ message: 'Student form not found' });
-  res.json(doc);
+    if (!doc) return res.status(404).json({ message: 'Student form not found' });
+
+    res.json(doc);
+  } catch (error) {
+    console.error('getPublicStudentByToken error:', error);
+    res.status(500).json({ message: 'Failed to fetch student form' });
+  }
 }
 
 async function updatePublicStudentByToken(req, res) {
-  let category = null;
-  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
-    category = await Category.findById(req.body.categoryId);
-  } else {
-    const existing = await Student.findOne({ publicEditToken: req.params.token }).populate('categoryId');
-    category = existing?.categoryId || null;
+  try {
+    let category = null;
+
+    if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+      category = await Category.findById(req.body.categoryId);
+    } else {
+      const existing = await Student.findOne({ publicEditToken: req.params.token }).populate('categoryId');
+      category = existing?.categoryId || null;
+    }
+
+    const board = getBoardFromCategory(category);
+    const payload = normalizeStudentPayload(req.body, board);
+
+    const doc = await Student.findOneAndUpdate(
+      { publicEditToken: req.params.token },
+      payload,
+      { new: true, runValidators: true }
+    )
+      .populate('matchedCategoryIds')
+      .populate('categoryId');
+
+    if (!doc) return res.status(404).json({ message: 'Student form not found' });
+
+    emitEvent('student_public_updated', { studentId: doc._id, fullName: doc.fullName });
+    res.json(doc);
+  } catch (error) {
+    console.error('updatePublicStudentByToken error:', error);
+    res.status(error.statusCode || 500).json({
+      message: error.message || 'Failed to update student form'
+    });
   }
-
-  const board = getBoardFromCategory(category);
-  const payload = calculatePercentIfNeeded(
-    {
-      ...req.body,
-      board,
-      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
-    },
-    board
-  );
-
-  if (payload.studentPhotoUrl && !payload.certificatePhotoUrl) {
-    payload.certificatePhotoUrl = payload.studentPhotoUrl;
-  }
-
-  const doc = await Student.findOneAndUpdate(
-    { publicEditToken: req.params.token },
-    payload,
-    { new: true, runValidators: true }
-  )
-    .populate('matchedCategoryIds')
-    .populate('categoryId');
-
-  if (!doc) return res.status(404).json({ message: 'Student form not found' });
-
-  emitEvent('student_public_updated', { studentId: doc._id, fullName: doc.fullName });
-  res.json(doc);
 }
 
 async function updateStudent(req, res) {
-  let category = null;
-  if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
-    category = await Category.findById(req.body.categoryId);
-  } else {
-    const existing = await Student.findById(req.params.id).populate('categoryId');
-    category = existing?.categoryId || null;
+  try {
+    let category = null;
+
+    if (req.body.categoryId && req.body.categoryId !== 'OTHER') {
+      category = await Category.findById(req.body.categoryId);
+    } else {
+      const existing = await Student.findById(req.params.id).populate('categoryId');
+      category = existing?.categoryId || null;
+    }
+
+    const board = getBoardFromCategory(category);
+    const payload = normalizeStudentPayload(req.body, board);
+
+    const doc = await Student.findByIdAndUpdate(req.params.id, payload, {
+      new: true,
+      runValidators: true
+    })
+      .populate('matchedCategoryIds')
+      .populate('categoryId');
+
+    if (!doc) return res.status(404).json({ message: 'Student not found' });
+
+    res.json(doc);
+  } catch (error) {
+    console.error('updateStudent error:', error);
+    res.status(error.statusCode || 500).json({
+      message: error.message || 'Failed to update student'
+    });
   }
-
-  const board = getBoardFromCategory(category);
-  const payload = calculatePercentIfNeeded(
-    {
-      ...req.body,
-      board,
-      resultImageUrl: req.body.resultImageUrl || req.body.marksheetFileUrl || ''
-    },
-    board
-  );
-
-  const doc = await Student.findByIdAndUpdate(req.params.id, payload, {
-    new: true,
-    runValidators: true
-  })
-    .populate('matchedCategoryIds')
-    .populate('categoryId');
-
-  if (!doc) return res.status(404).json({ message: 'Student not found' });
-  res.json(doc);
 }
 
 async function parseStudent(req, res) {
-  const student = await Student.findById(req.params.id).populate('categoryId');
-  if (!student) return res.status(404).json({ message: 'Student not found' });
+  try {
+    const student = await Student.findById(req.params.id).populate('categoryId');
+    if (!student) return res.status(404).json({ message: 'Student not found' });
 
-  student.status = 'Processing';
-  student.rawExtractedText =
-    student.rawExtractedText ||
-    `Parsed placeholder for ${student.fullName} / ${student.board} / ${student.className}`;
-  student.extractionConfidence = student.extractionConfidence || 0.91;
+    student.status = 'Processing';
+    student.rawExtractedText =
+      student.rawExtractedText ||
+      `Parsed placeholder for ${student.fullName} / ${student.board} / ${student.className}`;
+    student.extractionConfidence = student.extractionConfidence || 0.91;
 
-  const board = getBoardFromCategory(student.categoryId);
-  if ((!student.percentage || student.percentage === 0) && Array.isArray(student.subjects) && student.subjects.length) {
-    student.percentage = Number(
-      getCalculatedPercentage(student, {
-        calculationMethod: String(board).toUpperCase() === 'CBSE' ? 'BEST_5' : 'DIRECT_PERCENTAGE',
-        bestOfCount: 5
-      }).toFixed(2)
-    );
+    const board = getBoardFromCategory(student.categoryId);
+    if ((!student.percentage || student.percentage === 0) && Array.isArray(student.subjects) && student.subjects.length) {
+      student.percentage = Number(
+        getCalculatedPercentage(student, {
+          calculationMethod: String(board).toUpperCase() === 'CBSE' ? 'BEST_5' : 'DIRECT_PERCENTAGE',
+          bestOfCount: 5
+        }).toFixed(2)
+      );
+    }
+
+    await student.save();
+    emitEvent('student_parsed', { studentId: student._id, confidence: student.extractionConfidence });
+    res.json(student);
+  } catch (error) {
+    console.error('parseStudent error:', error);
+    res.status(500).json({ message: 'Failed to parse student' });
   }
-
-  await student.save();
-  emitEvent('student_parsed', { studentId: student._id, confidence: student.extractionConfidence });
-  res.json(student);
 }
 
 async function evaluateStudent(req, res) {
-  const student = await Student.findById(req.params.id).populate('categoryId');
-  if (!student) return res.status(404).json({ message: 'Student not found' });
+  try {
+    const student = await Student.findById(req.params.id).populate('categoryId');
+    if (!student) return res.status(404).json({ message: 'Student not found' });
 
-  const categories = await Category.find({ isActive: true });
-  const matched = categories.filter((cat) => doesMatch(student, cat));
+    const categories = await Category.find({ isActive: true });
+    const matched = categories.filter((cat) => doesMatch(student, cat));
 
-  student.matchedCategoryIds = matched.map((x) => x._id);
-  student.status = matched.length ? 'Eligible' : 'Review Needed';
-  await student.save();
+    student.matchedCategoryIds = matched.map((x) => x._id);
+    student.status = matched.length ? 'Eligible' : 'Review Needed';
+    await student.save();
 
-  const updated = await Student.findById(student._id)
-    .populate('matchedCategoryIds')
-    .populate('categoryId');
+    const updated = await Student.findById(student._id)
+      .populate('matchedCategoryIds')
+      .populate('categoryId');
 
-  emitEvent('student_eligible', {
-    studentId: updated._id,
-    matchedCount: matched.length,
-    status: updated.status
-  });
+    emitEvent('student_eligible', {
+      studentId: updated._id,
+      matchedCount: matched.length,
+      status: updated.status
+    });
 
-  res.json(updated);
+    res.json(updated);
+  } catch (error) {
+    console.error('evaluateStudent error:', error);
+    res.status(500).json({ message: 'Failed to evaluate student' });
+  }
 }
 
 module.exports = {
