@@ -34,7 +34,8 @@ function calculatePercentIfNeeded(payload, categoryBoard = '') {
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
-  const editLink = `${process.env.CLIENT_URL || 'https://bkfrontend.vercel.app'}/student-edit/${student.publicEditToken}`;
+  
+  const editLink = `${process.env.CLIENT_URL || 'https://bkawards.instify.in'}/student-edit/${student.publicEditToken}`;
 
   await sendTemplateMessage({
     to: student.mobile,
