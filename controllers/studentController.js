@@ -10,10 +10,20 @@ const { sendTemplateMessage, sendTextMessage } = require('../services/whatsappSe
 function getBoardFromCategory(category) {
   if (!category) return '';
   if (category.board) return category.board;
+
   const title = String(category.title || '').toUpperCase();
   if (title.includes('CBSE')) return 'CBSE';
   if (title.includes('STATE')) return 'STATE BOARD';
+
   return '';
+}
+
+function buildFullName(body = {}) {
+  return [body.firstName, body.lastName]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
 }
 
 function calculatePercentIfNeeded(payload, categoryBoard = '') {
@@ -33,8 +43,14 @@ function calculatePercentIfNeeded(payload, categoryBoard = '') {
 }
 
 function normalizeStudentPayload(body, board = '') {
+  const computedFullName = String(body.fullName || buildFullName(body) || '').trim();
+
   const payload = {
     ...body,
+    firstName: String(body.firstName || '').trim(),
+    lastName: String(body.lastName || '').trim(),
+    fatherName: String(body.fatherName || '').trim(),
+    fullName: computedFullName,
     board,
     resultImageUrl: body.resultImageUrl || body.marksheetFileUrl || ''
   };
@@ -54,6 +70,10 @@ function normalizeStudentPayload(body, board = '') {
 
   if (!payload.categoryOther) {
     payload.categoryOther = '';
+  }
+
+  if (!payload.gender) {
+    payload.gender = '';
   }
 
   if (payload.studentPhotoUrl && !payload.certificatePhotoUrl) {
@@ -116,20 +136,30 @@ async function queueStudentConfirmation(student) {
 }
 
 async function getPublicCategories(req, res) {
-  const docs = await Category.find({ isActive: true })
-    .select('_id title board className minPercentage')
-    .sort({ createdAt: -1 });
+  try {
+    const docs = await Category.find({ isActive: true })
+      .select('_id title board className minPercentage')
+      .sort({ createdAt: -1 });
 
-  res.json(docs);
+    res.json(docs);
+  } catch (error) {
+    console.error('getPublicCategories error:', error);
+    res.status(500).json({ message: 'Failed to fetch categories' });
+  }
 }
 
 async function getStudents(req, res) {
-  const docs = await Student.find()
-    .populate('matchedCategoryIds')
-    .populate('categoryId')
-    .sort({ createdAt: -1 });
+  try {
+    const docs = await Student.find()
+      .populate('matchedCategoryIds')
+      .populate('categoryId')
+      .sort({ createdAt: -1 });
 
-  res.json(docs);
+    res.json(docs);
+  } catch (error) {
+    console.error('getStudents error:', error);
+    res.status(500).json({ message: 'Failed to fetch students' });
+  }
 }
 
 async function createStudent(req, res) {
@@ -144,7 +174,10 @@ async function createStudent(req, res) {
     const payload = normalizeStudentPayload(req.body, board);
 
     const doc = await Student.create(payload);
-    emitEvent('student_form_submitted', { studentId: doc._id, fullName: doc.fullName });
+    emitEvent('student_form_submitted', {
+      studentId: doc._id,
+      fullName: doc.fullName
+    });
 
     res.status(201).json(doc);
   } catch (error) {
@@ -169,7 +202,10 @@ async function createPublicStudent(req, res) {
     const doc = await Student.create(payload);
     await queueStudentConfirmation(doc);
 
-    emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
+    emitEvent('student_public_registered', {
+      studentId: doc._id,
+      fullName: doc.fullName
+    });
 
     res.status(201).json({
       message: 'Registration submitted successfully'
@@ -188,7 +224,9 @@ async function getPublicStudentByToken(req, res) {
       .populate('matchedCategoryIds')
       .populate('categoryId');
 
-    if (!doc) return res.status(404).json({ message: 'Student form not found' });
+    if (!doc) {
+      return res.status(404).json({ message: 'Student form not found' });
+    }
 
     res.json(doc);
   } catch (error) {
@@ -219,9 +257,15 @@ async function updatePublicStudentByToken(req, res) {
       .populate('matchedCategoryIds')
       .populate('categoryId');
 
-    if (!doc) return res.status(404).json({ message: 'Student form not found' });
+    if (!doc) {
+      return res.status(404).json({ message: 'Student form not found' });
+    }
 
-    emitEvent('student_public_updated', { studentId: doc._id, fullName: doc.fullName });
+    emitEvent('student_public_updated', {
+      studentId: doc._id,
+      fullName: doc.fullName
+    });
+
     res.json(doc);
   } catch (error) {
     console.error('updatePublicStudentByToken error:', error);
@@ -252,7 +296,9 @@ async function updateStudent(req, res) {
       .populate('matchedCategoryIds')
       .populate('categoryId');
 
-    if (!doc) return res.status(404).json({ message: 'Student not found' });
+    if (!doc) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
 
     res.json(doc);
   } catch (error) {
@@ -266,7 +312,9 @@ async function updateStudent(req, res) {
 async function parseStudent(req, res) {
   try {
     const student = await Student.findById(req.params.id).populate('categoryId');
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
 
     student.status = 'Processing';
     student.rawExtractedText =
@@ -285,7 +333,11 @@ async function parseStudent(req, res) {
     }
 
     await student.save();
-    emitEvent('student_parsed', { studentId: student._id, confidence: student.extractionConfidence });
+    emitEvent('student_parsed', {
+      studentId: student._id,
+      confidence: student.extractionConfidence
+    });
+
     res.json(student);
   } catch (error) {
     console.error('parseStudent error:', error);
@@ -296,7 +348,9 @@ async function parseStudent(req, res) {
 async function evaluateStudent(req, res) {
   try {
     const student = await Student.findById(req.params.id).populate('categoryId');
-    if (!student) return res.status(404).json({ message: 'Student not found' });
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
 
     const categories = await Category.find({ isActive: true });
     const matched = categories.filter((cat) => doesMatch(student, cat));

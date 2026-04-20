@@ -12,8 +12,12 @@ const subjectSchema = new mongoose.Schema(
 
 const studentSchema = new mongoose.Schema(
   {
+    firstName: { type: String, default: '', trim: true },
+    lastName: { type: String, default: '', trim: true },
+    fatherName: { type: String, default: '', trim: true },
     fullName: { type: String, required: true, trim: true },
-    gender: { type: String, default: 'Any' },
+
+    gender: { type: String, default: '' },
     address: { type: String, default: '' },
 
     mobile: { type: String, required: true, trim: true },
@@ -63,9 +67,21 @@ studentSchema.pre('validate', function (next) {
   if (!this.publicEditToken) {
     this.publicEditToken = crypto.randomBytes(24).toString('hex');
   }
+
   if (!this.certificatePhotoUrl && this.studentPhotoUrl) {
     this.certificatePhotoUrl = this.studentPhotoUrl;
   }
+
+  const builtFullName = [this.firstName, this.lastName]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+
+  if ((!this.fullName || !String(this.fullName).trim()) && builtFullName) {
+    this.fullName = builtFullName;
+  }
+
   next();
 });
 
