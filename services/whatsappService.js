@@ -2,7 +2,13 @@ const axios = require('axios');
 
 const GRAPH_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
 
-async function sendTemplateMessage({ to, templateName, languageCode = 'en_US', bodyParameters = [] }) {
+async function sendTemplateMessage({
+  to,
+  templateName,
+  languageCode = 'en_US',
+  bodyParameters = [],
+  buttonParameters = []
+}) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -10,14 +16,28 @@ async function sendTemplateMessage({ to, templateName, languageCode = 'en_US', b
     return { skipped: true, reason: 'Missing WhatsApp config or recipient' };
   }
 
-  const components = bodyParameters.length
-    ? [
-        {
-          type: 'body',
-          parameters: bodyParameters.map((text) => ({ type: 'text', text: String(text) }))
-        }
-      ]
-    : [];
+  const components = [];
+
+  if (Array.isArray(bodyParameters) && bodyParameters.length) {
+    components.push({
+      type: 'body',
+      parameters: bodyParameters.map((text) => ({
+        type: 'text',
+        text: String(text || '')
+      }))
+    });
+  }
+
+  if (Array.isArray(buttonParameters) && buttonParameters.length) {
+    buttonParameters.forEach((button) => {
+      components.push({
+        type: 'button',
+        sub_type: button.sub_type || 'url',
+        index: String(button.index ?? 0),
+        parameters: Array.isArray(button.parameters) ? button.parameters : []
+      });
+    });
+  }
 
   const payload = {
     messaging_product: 'whatsapp',

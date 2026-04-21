@@ -86,58 +86,107 @@ function normalizeStudentPayload(body, board = '') {
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
-  const editLink = `${process.env.CLIENT_URL || 'https://bkawards.instify.in'}/student-edit/${student.publicEditToken}`;
+  const editPath = `student-edit/${student.publicEditToken}`;
+  const fullEditLink = `${process.env.CLIENT_URL || 'https://bkawards.instify.in'}/${editPath}`;
 
-  await sendTemplateMessage({
-    to: student.mobile,
-    templateName: 'bk_awards',
-    languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
-    bodyParameters: [student.fullName]
-  });
+  try {
+    await sendTemplateMessage({
+      to: student.mobile,
+      templateName: 'bk_awards',
+      languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+      bodyParameters: [student.fullName],
+      buttonParameters: [
+        {
+          sub_type: 'url',
+          index: 0,
+          parameters: [
+            {
+              type: 'text',
+              text: editPath
+            }
+          ]
+        }
+      ]
+    });
 
-  await WhatsAppMessage.create({
-    to: student.mobile,
-    templateName: 'bk_awards',
-    messageType: 'TEMPLATE',
-    status: 'SENT',
-    relatedEntityType: 'Student',
-    relatedEntityId: String(student._id),
-    bodyText: `Hello ${student.fullName}, Your registration for BK Scholar Awards 2026 has been received successfully ✅ We will review your details and check your eligibility for the selected category. Please stay connected with us on WhatsApp for further updates 📲 Badte Kadam, Gondia`
-  });
+    await WhatsAppMessage.create({
+      to: student.mobile,
+      templateName: 'bk_awards',
+      messageType: 'TEMPLATE',
+      status: 'SENT',
+      relatedEntityType: 'Student',
+      relatedEntityId: String(student._id),
+      bodyText:
+        `Hello ${student.fullName}, ` +
+        `Your registration for BK Scholar Awards 2026 has been received successfully ✅ ` +
+        `We will review your details and check your eligibility for the selected category. ` +
+        `Please stay connected with us on WhatsApp for further updates 📲`
+    });
 
-  await sendTextMessage({
-    to: student.mobile,
-    body:
-      `Your secure edit link for BK Scholar Awards 2026:\n${editLink}\n\n` +
-      `Use this link only if you want to update your form later.`
-  });
+    // Keep this text link for now as backup.
+    await sendTextMessage({
+      to: student.mobile,
+      body:
+        `Your secure edit link for BK Scholar Awards 2026:\n${fullEditLink}\n\n` +
+        `Use this link only if you want to update your form later.`
+    });
 
-  await WhatsAppMessage.create({
-    to: student.mobile,
-    templateName: 'student_edit_link',
-    messageType: 'TEXT',
-    status: 'SENT',
-    relatedEntityType: 'Student',
-    relatedEntityId: String(student._id),
-    bodyText: `Secure edit link shared to ${student.fullName}`
-  });
+    await WhatsAppMessage.create({
+      to: student.mobile,
+      templateName: 'student_edit_link',
+      messageType: 'TEXT',
+      status: 'SENT',
+      relatedEntityType: 'Student',
+      relatedEntityId: String(student._id),
+      bodyText: `Secure edit link shared to ${student.fullName}`
+    });
 
-  await Notification.create({
-    title: 'Student confirmation sent',
-    message: `Registration confirmation sent for ${student.fullName}`,
-    type: 'WHATSAPP',
-    targetRoles: ['ADMIN', 'SENIOR_TEAM']
-  });
+    await Notification.create({
+      title: 'Student confirmation sent',
+      message: `Registration confirmation sent for ${student.fullName}`,
+      type: 'WHATSAPP',
+      targetRoles: ['ADMIN', 'SENIOR_TEAM']
+    });
 
-  student.whatsappConfirmationSentAt = new Date();
-  await student.save();
+    student.whatsappConfirmationSentAt = new Date();
+    await student.save();
 
-  emitEvent('whatsapp_message_logged', { to: student.mobile, studentId: student._id });
+    emitEvent('whatsapp_message_logged', { to: student.mobile, studentId: student._id });
+  } catch (error) {
+    console.error('queueStudentConfirmation error:', error?.response?.data || error.message || error);
+
+    await WhatsAppMessage.create({
+      to: student.mobile,
+      templateName: 'bk_awards',
+      messageType: 'TEMPLATE',
+      status: 'FAILED',
+      relatedEntityType: 'Student',
+      relatedEntityId: String(student._id),
+      bodyText: `Failed to send registration confirmation to ${student.fullName}`
+    });
+
+    await Notification.create({
+      title: 'Student confirmation failed',
+      message: `Registration confirmation failed for ${student.fullName}`,
+      type: 'WHATSAPP',
+      targetRoles: ['ADMIN', 'SENIOR_TEAM']
+    });
+
+    throw error;
+  }
 }
 
 async function getPublicCategories(req, res) {
   try {
-    const docs = await Category.find({ isActive: true, categoryType: 'AWARD' })
+    const docs = await Category.find({
+      isActive: true,
+      $or: [
+        { categoryType: 'AWARD' },
+        { categoryType: { $exists: false } },
+        { categoryType: null },
+        { categoryType: '' }
+      ]
+    })
       .select('_id title board className minPercentage')
       .sort({ createdAt: -1 });
 
