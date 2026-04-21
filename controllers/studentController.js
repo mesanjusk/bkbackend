@@ -102,7 +102,7 @@ async function queueStudentConfirmation(student) {
     status: 'SENT',
     relatedEntityType: 'Student',
     relatedEntityId: String(student._id),
-    bodyText: `Hello ${student.fullName}, Your Registration for BK Scholar Awards 2026 has been successfully submitted. We will share further updates with you on WhatsApp. Badte Kadam, Gondia`
+    bodyText: `Hello ${student.fullName}, Your registration for BK Scholar Awards 2026 has been received successfully ✅ We will review your details and check your eligibility for the selected category. Please stay connected with us on WhatsApp for further updates 📲 Badte Kadam, Gondia`
   });
 
   await sendTextMessage({
@@ -137,7 +137,7 @@ async function queueStudentConfirmation(student) {
 
 async function getPublicCategories(req, res) {
   try {
-    const docs = await Category.find({ isActive: true })
+    const docs = await Category.find({ isActive: true, categoryType: 'AWARD' })
       .select('_id title board className minPercentage')
       .sort({ createdAt: -1 });
 
