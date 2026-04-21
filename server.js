@@ -38,7 +38,7 @@ app.get('/', (req, res) => res.send('Scholar Awards Event Backend running'));
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 app.use('/api/roles', require('./routes/crudRoutes')(require('./models/Role')));
-app.use('/api/users', require('./routes/crudRoutes')(require('./models/User'), 'roleId categoriesAssigned'));
+app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/events', require('./routes/crudRoutes')(require('./models/Event')));
 app.use('/api/categories', require('./routes/crudRoutes')(require('./models/Category'), 'anchorId backupAnchorIds preferredGuestIds'));
 app.use('/api/students', require('./routes/studentRoutes'));
