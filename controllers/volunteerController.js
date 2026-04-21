@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const Volunteer = require('../models/Volunteer');
-const Team = require('../models/Team');
+const Category = require('../models/Category');
 const { emitEvent } = require('../services/socket');
 
 function buildFullName(body = {}) {
@@ -13,8 +13,10 @@ function buildFullName(body = {}) {
 
 async function getPublicTeams(req, res) {
   try {
-    const docs = await Team.find({ isActive: true }).select('_id name code').sort({ name: 1 });
-    res.json(docs);
+    const docs = await Category.find({ categoryType: 'VOLUNTEER_TEAM', isActive: true })
+      .select('_id title categoryType')
+      .sort({ title: 1 });
+    res.json(docs.map((item) => ({ _id: item._id, name: item.title, categoryType: item.categoryType })));
   } catch (error) {
     console.error('getPublicTeams error:', error);
     res.status(500).json({ message: 'Failed to fetch volunteer teams' });
@@ -43,7 +45,7 @@ async function createPublicVolunteer(req, res) {
       if (!mongoose.Types.ObjectId.isValid(teamId)) {
         return res.status(400).json({ message: 'Invalid volunteer team category' });
       }
-      const team = await Team.findById(teamId);
+      const team = await Category.findById(teamId);
       if (!team) {
         return res.status(400).json({ message: 'Volunteer team category not found' });
       }
@@ -63,11 +65,7 @@ async function createPublicVolunteer(req, res) {
       remarks: String(req.body.remarks || '').trim()
     });
 
-    emitEvent('volunteer_public_registered', {
-      volunteerId: doc._id,
-      fullName: doc.fullName
-    });
-
+    emitEvent('volunteer_public_registered', { volunteerId: doc._id, fullName: doc.fullName });
     res.status(201).json({ message: 'Volunteer registration submitted successfully' });
   } catch (error) {
     console.error('createPublicVolunteer error:', error);
@@ -75,7 +73,4 @@ async function createPublicVolunteer(req, res) {
   }
 }
 
-module.exports = {
-  getPublicTeams,
-  createPublicVolunteer
-};
+module.exports = { getPublicTeams, createPublicVolunteer };

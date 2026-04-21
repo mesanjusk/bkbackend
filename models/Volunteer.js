@@ -8,7 +8,7 @@ const volunteerSchema = new mongoose.Schema(
     gender: { type: String, default: '' },
     address: { type: String, default: '' },
     mobile: { type: String, required: true, trim: true },
-    teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Team', default: null },
+    teamId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     teamOther: { type: String, default: '' },
     photoUrl: { type: String, default: '' },
     remarks: { type: String, default: '' },
