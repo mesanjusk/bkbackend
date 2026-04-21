@@ -54,6 +54,7 @@ app.use('/api/expenses', require('./routes/crudRoutes')(require('./models/Expens
 app.use('/api/event-tasks', require('./routes/crudRoutes')(require('./models/EventTask'), 'teamId assignedToUserId backupUserId linkedVendorId'));
 app.use('/api/whatsapp', require('./routes/whatsappRoutes'));
 app.use('/api/uploads', require('./routes/uploadRoutes'));
+app.use('/api/volunteers', require('./routes/volunteerRoutes'));
 
 async function startServer() {
   try {

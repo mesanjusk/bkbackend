@@ -25,12 +25,41 @@ async function uploadPublicFile(req, res) {
   }
 
   const folder = req.body.folder || 'bk_awards';
-  const result = await uploadBuffer(req.file, {
+  const forcePng = String(req.body.forcePng || '').toLowerCase() === 'true';
+  const removeBackground = String(req.body.removeBackground || '').toLowerCase() === 'true';
+
+  const options = {
     folder,
     resource_type: isPdf ? 'raw' : 'image',
     use_filename: true,
     unique_filename: true
-  });
+  };
+
+  if (isImage && forcePng) {
+    options.format = 'png';
+  }
+
+  if (isImage && removeBackground) {
+    options.background_removal = 'cloudinary_ai';
+  }
+
+  let result;
+  try {
+    result = await uploadBuffer(req.file, options);
+  } catch (error) {
+    if (isImage && removeBackground) {
+      const fallbackOptions = {
+        folder,
+        resource_type: 'image',
+        use_filename: true,
+        unique_filename: true
+      };
+      if (forcePng) fallbackOptions.format = 'png';
+      result = await uploadBuffer(req.file, fallbackOptions);
+    } else {
+      throw error;
+    }
+  }
 
   return res.status(201).json({
     url: result.secure_url,
