@@ -1,5 +1,9 @@
 const express = require('express');
-const { getCategories, createCategory } = require('../controllers/categoryController');
+const {
+  getCategories,
+  createCategory,
+  updateCategory,
+} = require('../controllers/categoryController');
 const { protect } = require('../middleware/auth');
 const Category = require('../models/Category');
 
@@ -20,5 +24,6 @@ router.get('/public/volunteer-teams', async (req, res) => {
 
 router.get('/', protect, getCategories);
 router.post('/', protect, createCategory);
+router.put('/:id', protect, updateCategory);
 
 module.exports = router;
