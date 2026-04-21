@@ -86,8 +86,7 @@ function normalizeStudentPayload(body, board = '') {
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
-  const editPath = `student-edit/${student.publicEditToken}`;
-  const fullEditLink = `${process.env.CLIENT_URL || 'https://bkawards.instify.in'}/${editPath}`;
+  const editToken = student.publicEditToken;
 
   try {
     await sendTemplateMessage({
@@ -102,7 +101,7 @@ async function queueStudentConfirmation(student) {
           parameters: [
             {
               type: 'text',
-              text: editPath
+              text: editToken
             }
           ]
         }
@@ -121,24 +120,6 @@ async function queueStudentConfirmation(student) {
         `Your registration for BK Scholar Awards 2026 has been received successfully ✅ ` +
         `We will review your details and check your eligibility for the selected category. ` +
         `Please stay connected with us on WhatsApp for further updates 📲`
-    });
-
-    // Keep this text link for now as backup.
-    await sendTextMessage({
-      to: student.mobile,
-      body:
-        `Your secure edit link for BK Scholar Awards 2026:\n${fullEditLink}\n\n` +
-        `Use this link only if you want to update your form later.`
-    });
-
-    await WhatsAppMessage.create({
-      to: student.mobile,
-      templateName: 'student_edit_link',
-      messageType: 'TEXT',
-      status: 'SENT',
-      relatedEntityType: 'Student',
-      relatedEntityId: String(student._id),
-      bodyText: `Secure edit link shared to ${student.fullName}`
     });
 
     await Notification.create({
