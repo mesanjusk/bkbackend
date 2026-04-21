@@ -24,7 +24,7 @@ async function uploadPublicFile(req, res) {
     return res.status(400).json({ message: 'Only image or PDF files are allowed' });
   }
 
-  const folder = req.body.folder || 'bk_awards';
+  const folder = req.body.folder || 'bk_award';
   const forcePng = String(req.body.forcePng || '').toLowerCase() === 'true';
   const removeBackground = String(req.body.removeBackground || '').toLowerCase() === 'true';
 

@@ -91,7 +91,7 @@ async function queueStudentConfirmation(student) {
   try {
     await sendTemplateMessage({
       to: student.mobile,
-      templateName: 'bk_awards',
+      templateName: 'bk_award',
       languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
       bodyParameters: [student.fullName],
       buttonParameters: [
@@ -110,7 +110,7 @@ async function queueStudentConfirmation(student) {
 
     await WhatsAppMessage.create({
       to: student.mobile,
-      templateName: 'bk_awards',
+      templateName: 'bk_award',
       messageType: 'TEMPLATE',
       status: 'SENT',
       relatedEntityType: 'Student',
@@ -138,7 +138,7 @@ async function queueStudentConfirmation(student) {
 
     await WhatsAppMessage.create({
       to: student.mobile,
-      templateName: 'bk_awards',
+      templateName: 'bk_award',
       messageType: 'TEMPLATE',
       status: 'FAILED',
       relatedEntityType: 'Student',
