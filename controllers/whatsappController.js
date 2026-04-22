@@ -25,19 +25,53 @@ function uniqueRecipients(items = []) {
   });
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function generateImageWithName(baseUrl, name, pos = {}) {
   if (!baseUrl || !String(baseUrl).includes('/upload/')) return baseUrl;
 
   const safeName = String(name || 'Guest').trim() || 'Guest';
-  const fontSize = Number(pos?.fontSize) > 0 ? Number(pos.fontSize) : 30;
-  const x = Number.isFinite(Number(pos?.x)) ? Math.round(Number(pos.x)) : 150;
-  const y = Number.isFinite(Number(pos?.y)) ? Math.round(Number(pos.y)) : 200;
-  const color = String(pos?.color || '#000000').replace('#', '') || '000000';
   const encodedText = encodeURIComponent(safeName);
+
+  const color = String(pos?.color || '#000000').replace('#', '') || '000000';
+
+  const originalWidth = Number(pos?.imageWidth) > 0 ? Number(pos.imageWidth) : 0;
+  const originalHeight = Number(pos?.imageHeight) > 0 ? Number(pos.imageHeight) : 0;
+  const previewWidth = Number(pos?.previewWidth) > 0 ? Number(pos.previewWidth) : 0;
+  const previewHeight = Number(pos?.previewHeight) > 0 ? Number(pos.previewHeight) : 0;
+
+  let x = 150;
+  let y = 200;
+  let fontSize = Number(pos?.fontSize) > 0 ? Number(pos.fontSize) : 30;
+
+  const hasPercentPosition =
+    Number.isFinite(Number(pos?.xPercent)) &&
+    Number.isFinite(Number(pos?.yPercent));
+
+  if (hasPercentPosition && originalWidth > 0 && originalHeight > 0) {
+    const xPercent = clamp(Number(pos.xPercent), 0, 0.98);
+    const yPercent = clamp(Number(pos.yPercent), 0, 0.98);
+
+    x = Math.round(originalWidth * xPercent);
+    y = Math.round(originalHeight * yPercent);
+
+    if (Number(pos?.fontSize) > 0 && previewWidth > 0) {
+      fontSize = Math.max(
+        12,
+        Math.round((Number(pos.fontSize) / previewWidth) * originalWidth)
+      );
+    }
+  } else {
+    x = Number.isFinite(Number(pos?.x)) ? Math.round(Number(pos.x)) : 150;
+    y = Number.isFinite(Number(pos?.y)) ? Math.round(Number(pos.y)) : 200;
+    fontSize = Number(pos?.fontSize) > 0 ? Number(pos.fontSize) : 30;
+  }
 
   return baseUrl.replace(
     '/upload/',
-    `/upload/l_text:Arial_${fontSize}:${encodedText},co_rgb:${color},g_north_west,x_${x},y_${y}/`
+    `/upload/l_text:Arial_${fontSize}_bold:${encodedText},co_rgb:${color},g_north_west,x_${x},y_${y}/`
   );
 }
 
@@ -207,7 +241,8 @@ async function sendInvitation(req, res) {
             finalImage,
             mediaId: uploadedMediaId,
             recipientName: recipient.name,
-            recipientMobile: recipient.mobile
+            recipientMobile: recipient.mobile,
+            textPosition
           },
           null,
           2
