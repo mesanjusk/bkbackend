@@ -219,7 +219,36 @@ async function sendInvitation(req, res) {
         templateName: 'entry_pass',
         languageCode: 'en_US',
         headerImageId: uploadedMediaId,
-        bodyParameters: payloadPreview.bodyParameters
+        bodyParameters: [
+          String(recipient.name || '').trim(),
+          String(eventName || '').trim(),
+          String(date || '').trim(),
+          String(time || '').trim(),
+          String(venue || '').trim()
+        ],
+        buttonParameters: [
+          {
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              { type: 'payload', payload: 'Going' }
+            ]
+          },
+          {
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              { type: 'payload', payload: 'Not Going' }
+            ]
+          },
+          {
+            sub_type: 'quick_reply',
+            index: 2,
+            parameters: [
+              { type: 'payload', payload: 'Not Sure e' }
+            ]
+          }
+        ]
       });
 
       const log = await WhatsAppMessage.create({
