@@ -55,7 +55,14 @@ async function sendText(req, res) {
     status: providerResponse?.messages?.length ? 'SENT' : 'QUEUED',
     meta: providerResponse || {}
   });
-  await Notification.create({ title: 'WhatsApp message queued', message: `WhatsApp ${templateName ? 'template' : 'text'} sent to ${to}`, type: 'WHATSAPP', targetRoles: ['ADMIN','SENIOR_TEAM'] });
+
+  await Notification.create({
+    title: 'WhatsApp message queued',
+    message: `WhatsApp ${templateName ? 'template' : 'text'} sent to ${to}`,
+    type: 'WHATSAPP',
+    targetRoles: ['ADMIN', 'SENIOR_TEAM']
+  });
+
   emitEvent('whatsapp_message_logged', log);
   emitEvent('notification_created', { type: 'WHATSAPP', to });
   res.status(201).json(log);
@@ -66,7 +73,13 @@ async function getRecipients(req, res) {
     Student.find({}, 'fullName mobile schoolName className').sort({ fullName: 1 }).lean(),
     Volunteer.find({}, 'fullName mobile teamOther').sort({ fullName: 1 }).lean(),
     Student.find({}, 'fullName parentMobile schoolName className').sort({ fullName: 1 }).lean(),
-    User.find({ isActive: true, eventDutyType: { $in: ['VOLUNTEER', 'TEAM_LEADER', 'SENIOR_TEAM', 'ADMIN', 'HOST', 'CERTIFICATE_TEAM'] } }, 'name mobile eventDutyType').sort({ name: 1 }).lean(),
+    User.find(
+      {
+        isActive: true,
+        eventDutyType: { $in: ['VOLUNTEER', 'TEAM_LEADER', 'SENIOR_TEAM', 'ADMIN', 'HOST', 'CERTIFICATE_TEAM'] }
+      },
+      'name mobile eventDutyType'
+    ).sort({ name: 1 }).lean(),
     User.find({ isActive: true, eventDutyType: 'GUEST' }, 'name mobile eventDutyType').sort({ name: 1 }).lean()
   ]);
 
@@ -159,7 +172,30 @@ async function sendInvitation(req, res) {
         templateName: 'entry_pass',
         languageCode: 'en_US',
         headerImageUrl: imageUrl,
-        bodyParameters: [recipient.name, eventName, date, time, venue]
+        bodyParameters: [recipient.name, eventName, date, time, venue],
+        buttonParameters: [
+          {
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [
+              { type: 'text', text: 'Going' }
+            ]
+          },
+          {
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [
+              { type: 'text', text: 'Not Sure' }
+            ]
+          },
+          {
+            sub_type: 'quick_reply',
+            index: 2,
+            parameters: [
+              { type: 'text', text: 'Not Going' }
+            ]
+          }
+        ]
       });
 
       const log = await WhatsAppMessage.create({
@@ -222,7 +258,11 @@ async function sendInvitation(req, res) {
     }
   }
 
-  emitEvent('whatsapp_invitation_sent', { total: results.length, success: results.filter((r) => r.ok).length });
+  emitEvent('whatsapp_invitation_sent', {
+    total: results.length,
+    success: results.filter((r) => r.ok).length
+  });
+
   res.status(201).json({
     total: results.length,
     success: results.filter((r) => r.ok).length,

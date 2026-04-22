@@ -63,15 +63,18 @@ async function sendTemplateMessage({
     }
   };
 
-  console.log('[whatsapp] sending template', JSON.stringify({
-    to,
-    templateName,
-    languageCode,
-    hasHeaderImage: Boolean(headerImageUrl),
-    bodyParameterCount: Array.isArray(bodyParameters) ? bodyParameters.length : 0,
-    buttonParameterCount: Array.isArray(buttonParameters) ? buttonParameters.length : 0,
-    payload
-  }));
+  console.log(
+    '[whatsapp] sending template',
+    JSON.stringify({
+      to,
+      templateName,
+      languageCode,
+      hasHeaderImage: Boolean(headerImageUrl),
+      bodyParameterCount: Array.isArray(bodyParameters) ? bodyParameters.length : 0,
+      buttonParameterCount: Array.isArray(buttonParameters) ? buttonParameters.length : 0,
+      payload
+    })
+  );
 
   const { data } = await axios.post(
     `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`,
