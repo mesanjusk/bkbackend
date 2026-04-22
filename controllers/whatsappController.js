@@ -184,6 +184,19 @@ async function sendInvitation(req, res) {
         ok: true
       });
     } catch (error) {
+      console.error('[whatsapp] entry_pass send failed', {
+        to: recipient.mobile,
+        name: recipient.name,
+        source: recipient.source,
+        imageUrl,
+        eventName,
+        date,
+        time,
+        venue,
+        status: error?.response?.status,
+        error: error?.response?.data || error.message
+      });
+
       await WhatsAppMessage.create({
         to: recipient.mobile,
         bodyText: `Entry pass for ${eventName}`,
