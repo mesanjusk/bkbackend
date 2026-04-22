@@ -6,6 +6,7 @@ async function sendTemplateMessage({
   to,
   templateName,
   languageCode = 'en_US',
+  headerImageUrl = '',
   bodyParameters = [],
   buttonParameters = []
 }) {
@@ -17,6 +18,18 @@ async function sendTemplateMessage({
   }
 
   const components = [];
+
+  if (headerImageUrl) {
+    components.push({
+      type: 'header',
+      parameters: [
+        {
+          type: 'image',
+          image: { link: headerImageUrl }
+        }
+      ]
+    });
+  }
 
   if (Array.isArray(bodyParameters) && bodyParameters.length) {
     components.push({
