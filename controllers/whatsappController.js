@@ -114,8 +114,25 @@ async function sendInvitation(req, res) {
     recipients = []
   } = req.body;
 
-  if (!imageUrl || !eventName || !date || !time || !venue) {
-    return res.status(400).json({ message: 'Image, event name, date, time and venue are required' });
+  const missingFields = [];
+  if (!String(imageUrl || '').trim()) missingFields.push('imageUrl');
+  if (!String(eventName || '').trim()) missingFields.push('eventName');
+  if (!String(date || '').trim()) missingFields.push('date');
+  if (!String(time || '').trim()) missingFields.push('time');
+  if (!String(venue || '').trim()) missingFields.push('venue');
+
+  if (missingFields.length) {
+    return res.status(400).json({
+      message: 'Required fields are missing',
+      missingFields,
+      debug: {
+        imageUrl: String(imageUrl || ''),
+        eventName: String(eventName || ''),
+        date: String(date || ''),
+        time: String(time || ''),
+        venue: String(venue || '')
+      }
+    });
   }
 
   const cleanRecipients = uniqueRecipients(
@@ -124,10 +141,13 @@ async function sendInvitation(req, res) {
       mobile: item?.mobile || item?.phone || item?.number || item?.whatsapp,
       source: item?.source || 'CUSTOM'
     }))
-  );
+  ).filter((item) => String(item.mobile || '').length >= 10);
 
   if (!cleanRecipients.length) {
-    return res.status(400).json({ message: 'At least one valid recipient is required' });
+    return res.status(400).json({
+      message: 'At least one valid recipient is required',
+      receivedRecipients: Array.isArray(recipients) ? recipients.length : 0
+    });
   }
 
   const results = [];
