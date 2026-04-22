@@ -168,35 +168,18 @@ async function sendInvitation(req, res) {
   for (const recipient of cleanRecipients) {
     try {
       const providerResponse = await sendTemplateMessage({
-        to: recipient.mobile,
-        templateName: 'entry_pass',
-        languageCode: 'en_US',
-        headerImageUrl: imageUrl,
-        bodyParameters: [recipient.name, eventName, date, time, venue],
-        buttonParameters: [
-          {
-            sub_type: 'quick_reply',
-            index: 0,
-            parameters: [
-              { type: 'payload', payload: '0' }
-            ]
-          },
-          {
-            sub_type: 'quick_reply',
-            index: 1,
-            parameters: [
-              { type: 'payload', payload: '1' }
-            ]
-          },
-          {
-            sub_type: 'quick_reply',
-            index: 2,
-            parameters: [
-              { type: 'payload', payload: '2' }
-            ]
-          }
-        ]
-      });
+  to: recipient.mobile,
+  templateName: 'entry_pass',
+  languageCode: 'en_US',
+  headerImageUrl: imageUrl,
+  bodyParameters: [
+    recipient.name.trim(),
+    eventName.trim(),
+    date.trim(),
+    time.trim(),
+    venue.trim()
+  ]
+});
 
       const log = await WhatsAppMessage.create({
         to: recipient.mobile,
