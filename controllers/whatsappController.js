@@ -25,6 +25,22 @@ function uniqueRecipients(items = []) {
   });
 }
 
+function generateImageWithName(baseUrl, name, pos = {}) {
+  if (!baseUrl || !String(baseUrl).includes('/upload/')) return baseUrl;
+
+  const safeName = String(name || 'Guest').trim() || 'Guest';
+  const fontSize = Number(pos?.fontSize) > 0 ? Number(pos.fontSize) : 30;
+  const x = Number.isFinite(Number(pos?.x)) ? Math.round(Number(pos.x)) : 150;
+  const y = Number.isFinite(Number(pos?.y)) ? Math.round(Number(pos.y)) : 200;
+  const color = String(pos?.color || '#000000').replace('#', '') || '000000';
+  const encodedText = encodeURIComponent(safeName);
+
+  return baseUrl.replace(
+    '/upload/',
+    `/upload/l_text:Arial_${fontSize}:${encodedText},co_rgb:${color},g_north_west,x_${x},y_${y}/`
+  );
+}
+
 async function sendText(req, res) {
   const { to, text, templateName } = req.body;
   let providerResponse = null;
@@ -94,24 +110,28 @@ async function getRecipients(req, res) {
       source: 'STUDENT',
       meta: { schoolName: item.schoolName || '', className: item.className || '' }
     }))),
+
     parents: uniqueRecipients(parents.map((item) => ({
       name: `${item.fullName} Parent`,
       mobile: item.parentMobile,
       source: 'PARENT',
       meta: { studentName: item.fullName, schoolName: item.schoolName || '', className: item.className || '' }
     }))),
+
     teamMembers: uniqueRecipients(teamMembers.map((item) => ({
       name: item.name,
       mobile: item.mobile,
       source: 'TEAM_MEMBER',
       meta: { dutyType: item.eventDutyType || '' }
     }))),
+
     volunteers: uniqueRecipients(volunteers.map((item) => ({
       name: item.fullName,
       mobile: item.mobile,
       source: 'VOLUNTEER',
       meta: { team: item.teamOther || '' }
     }))),
+
     guests: uniqueRecipients(guests.map((item) => ({
       name: item.name,
       mobile: item.mobile,
@@ -128,6 +148,7 @@ async function sendInvitation(req, res) {
     date,
     time,
     venue,
+    textPosition,
     recipients = []
   } = req.body;
 
@@ -160,41 +181,39 @@ async function sendInvitation(req, res) {
     });
   }
 
-  let uploadedMediaId = '';
-
-  try {
-    const mediaUpload = await uploadWhatsAppMedia({
-      fileUrl: imageUrl
-    });
-    uploadedMediaId = mediaUpload?.id || '';
-
-    console.log(
-      '[whatsapp] uploaded media for template header',
-      JSON.stringify(
-        {
-          imageUrl,
-          mediaId: uploadedMediaId
-        },
-        null,
-        2
-      )
-    );
-  } catch (error) {
-    console.error(
-      '[whatsapp] header media upload failed full',
-      JSON.stringify(error?.response?.data || { message: error.message }, null, 2)
-    );
-
-    return res.status(500).json({
-      message: 'Failed to upload invitation image to WhatsApp',
-      error: error?.response?.data || error.message
-    });
-  }
-
   const results = [];
 
   for (const recipient of cleanRecipients) {
+    let finalImage = imageUrl;
+    let uploadedMediaId = '';
+
     try {
+      finalImage = generateImageWithName(
+        imageUrl,
+        String(recipient.name || '').trim(),
+        textPosition
+      );
+
+      const mediaUpload = await uploadWhatsAppMedia({
+        fileUrl: finalImage
+      });
+      uploadedMediaId = mediaUpload?.id || '';
+
+      console.log(
+        '[whatsapp] uploaded personalized media for template header',
+        JSON.stringify(
+          {
+            originalImageUrl: imageUrl,
+            finalImage,
+            mediaId: uploadedMediaId,
+            recipientName: recipient.name,
+            recipientMobile: recipient.mobile
+          },
+          null,
+          2
+        )
+      );
+
       const payloadPreview = {
         to: recipient.mobile,
         templateName: 'entry_pass',
@@ -206,6 +225,23 @@ async function sendInvitation(req, res) {
           String(date || '').trim(),
           String(time || '').trim(),
           String(venue || '').trim()
+        ],
+        buttonParameters: [
+          {
+            sub_type: 'quick_reply',
+            index: 0,
+            parameters: [{ type: 'payload', payload: 'Going' }]
+          },
+          {
+            sub_type: 'quick_reply',
+            index: 1,
+            parameters: [{ type: 'payload', payload: 'Not Sure' }]
+          },
+          {
+            sub_type: 'quick_reply',
+            index: 2,
+            parameters: [{ type: 'payload', payload: 'Not Going' }]
+          }
         ]
       };
 
@@ -238,14 +274,14 @@ async function sendInvitation(req, res) {
             sub_type: 'quick_reply',
             index: 1,
             parameters: [
-              { type: 'payload', payload: 'Not Going' }
+              { type: 'payload', payload: 'Not Sure' }
             ]
           },
           {
             sub_type: 'quick_reply',
             index: 2,
             parameters: [
-              { type: 'payload', payload: 'Not Sure e' }
+              { type: 'payload', payload: 'Not Going' }
             ]
           }
         ]
@@ -261,7 +297,16 @@ async function sendInvitation(req, res) {
           providerResponse,
           recipientName: recipient.name,
           recipientSource: recipient.source,
-          invitation: { imageUrl, uploadedMediaId, eventName, date, time, venue }
+          invitation: {
+            imageUrl,
+            finalImage,
+            uploadedMediaId,
+            eventName,
+            date,
+            time,
+            venue,
+            textPosition: textPosition || null
+          }
         }
       });
 
@@ -286,11 +331,13 @@ async function sendInvitation(req, res) {
             name: recipient.name,
             source: recipient.source,
             uploadedMediaId,
-            imageUrl,
+            originalImageUrl: imageUrl,
+            finalImage,
             eventName,
             date,
             time,
             venue,
+            textPosition: textPosition || null,
             status: error?.response?.status
           },
           null,
@@ -307,7 +354,16 @@ async function sendInvitation(req, res) {
         meta: {
           recipientName: recipient.name,
           recipientSource: recipient.source,
-          invitation: { imageUrl, uploadedMediaId, eventName, date, time, venue },
+          invitation: {
+            imageUrl,
+            finalImage,
+            uploadedMediaId,
+            eventName,
+            date,
+            time,
+            venue,
+            textPosition: textPosition || null
+          },
           error: error?.response?.data || error.message
         }
       });
