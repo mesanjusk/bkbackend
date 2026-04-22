@@ -178,21 +178,21 @@ async function sendInvitation(req, res) {
             sub_type: 'quick_reply',
             index: 0,
             parameters: [
-              { type: 'text', text: 'Going' }
+              { type: 'payload', text: 'Going' }
             ]
           },
           {
             sub_type: 'quick_reply',
             index: 1,
             parameters: [
-              { type: 'text', text: 'Not Sure' }
+              { type: 'payload', text: 'Not Sure' }
             ]
           },
           {
             sub_type: 'quick_reply',
             index: 2,
             parameters: [
-              { type: 'text', text: 'Not Going' }
+              { type: 'payload', text: 'Not Going' }
             ]
           }
         ]
