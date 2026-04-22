@@ -173,29 +173,7 @@ async function sendInvitation(req, res) {
         languageCode: 'en_US',
         headerImageUrl: imageUrl,
         bodyParameters: [recipient.name, eventName, date, time, venue],
-        buttonParameters: [
-          {
-            sub_type: 'quick_reply',
-            index: 0,
-            parameters: [
-              { type: 'payload', payload: 'Going' }
-            ]
-          },
-          {
-            sub_type: 'quick_reply',
-            index: 1,
-            parameters: [
-              { type: 'payload', payload: 'Not Sure' }
-            ]
-          },
-          {
-            sub_type: 'quick_reply',
-            index: 2,
-            parameters: [
-              { type: 'payload', payload: 'Not Going' }
-            ]
-          }
-        ]
+        
       });
 
       const log = await WhatsAppMessage.create({
