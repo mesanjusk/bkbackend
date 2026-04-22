@@ -1,12 +1,51 @@
 const axios = require('axios');
+const FormData = require('form-data');
 
 const GRAPH_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
+
+async function uploadWhatsAppMedia({ fileUrl, mimeType = 'image/jpeg' }) {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!token || !phoneNumberId || !fileUrl) {
+    throw new Error('Missing WhatsApp config or fileUrl for media upload');
+  }
+
+  const fileResponse = await axios.get(fileUrl, {
+    responseType: 'stream'
+  });
+
+  const contentType = fileResponse.headers['content-type'] || mimeType;
+
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', contentType);
+  form.append('file', fileResponse.data, {
+    filename: `header.${contentType.includes('png') ? 'png' : 'jpg'}`,
+    contentType
+  });
+
+  const { data } = await axios.post(
+    `https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/media`,
+    form,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...form.getHeaders()
+      },
+      maxBodyLength: Infinity
+    }
+  );
+
+  return data; // { id: 'MEDIA_ID' }
+}
 
 async function sendTemplateMessage({
   to,
   templateName,
   languageCode = 'en_US',
   headerImageUrl = '',
+  headerImageId = '',
   bodyParameters = [],
   buttonParameters = []
 }) {
@@ -19,13 +58,17 @@ async function sendTemplateMessage({
 
   const components = [];
 
-  if (headerImageUrl) {
+  if (headerImageId || headerImageUrl) {
+    const imageObject = headerImageId
+      ? { id: headerImageId }
+      : { link: headerImageUrl };
+
     components.push({
       type: 'header',
       parameters: [
         {
           type: 'image',
-          image: { link: headerImageUrl }
+          image: imageObject
         }
       ]
     });
@@ -36,7 +79,7 @@ async function sendTemplateMessage({
       type: 'body',
       parameters: bodyParameters.map((text) => ({
         type: 'text',
-        text: String(text || '')
+        text: String(text || '').trim()
       }))
     });
   }
@@ -69,7 +112,8 @@ async function sendTemplateMessage({
       to,
       templateName,
       languageCode,
-      hasHeaderImage: Boolean(headerImageUrl),
+      hasHeaderImage: Boolean(headerImageUrl || headerImageId),
+      usingHeaderImageId: Boolean(headerImageId),
       bodyParameterCount: Array.isArray(bodyParameters) ? bodyParameters.length : 0,
       buttonParameterCount: Array.isArray(buttonParameters) ? buttonParameters.length : 0,
       payload
@@ -120,6 +164,7 @@ async function sendTextMessage({ to, body }) {
 }
 
 module.exports = {
+  uploadWhatsAppMedia,
   sendTemplateMessage,
   sendTextMessage
 };

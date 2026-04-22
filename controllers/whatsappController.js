@@ -4,7 +4,11 @@ const Student = require('../models/Student');
 const Volunteer = require('../models/Volunteer');
 const User = require('../models/User');
 const { emitEvent } = require('../services/socket');
-const { sendTemplateMessage, sendTextMessage } = require('../services/whatsappService');
+const {
+  sendTemplateMessage,
+  sendTextMessage,
+  uploadWhatsAppMedia
+} = require('../services/whatsappService');
 
 function normalizePhone(value) {
   return String(value || '').replace(/[^\d]/g, '').trim();
@@ -137,14 +141,7 @@ async function sendInvitation(req, res) {
   if (missingFields.length) {
     return res.status(400).json({
       message: 'Required fields are missing',
-      missingFields,
-      debug: {
-        imageUrl: String(imageUrl || ''),
-        eventName: String(eventName || ''),
-        date: String(date || ''),
-        time: String(time || ''),
-        venue: String(venue || '')
-      }
+      missingFields
     });
   }
 
@@ -163,23 +160,47 @@ async function sendInvitation(req, res) {
     });
   }
 
+  let uploadedMediaId = '';
+
+  try {
+    const mediaUpload = await uploadWhatsAppMedia({
+      fileUrl: imageUrl
+    });
+    uploadedMediaId = mediaUpload?.id || '';
+    console.log('[whatsapp] uploaded media for template header', {
+      imageUrl,
+      mediaId: uploadedMediaId
+    });
+  } catch (error) {
+    console.error('[whatsapp] header media upload failed', {
+      imageUrl,
+      status: error?.response?.status,
+      error: error?.response?.data || error.message
+    });
+
+    return res.status(500).json({
+      message: 'Failed to upload invitation image to WhatsApp',
+      error: error?.response?.data || error.message
+    });
+  }
+
   const results = [];
 
   for (const recipient of cleanRecipients) {
     try {
       const providerResponse = await sendTemplateMessage({
-  to: recipient.mobile,
-  templateName: 'entry_pass',
-  languageCode: 'en_US',
-  
-  bodyParameters: [
-    recipient.name.trim(),
-    eventName.trim(),
-    date.trim(),
-    time.trim(),
-    venue.trim()
-  ]
-});
+        to: recipient.mobile,
+        templateName: 'entry_pass',
+        languageCode: 'en_US',
+        headerImageId: uploadedMediaId,
+        bodyParameters: [
+          String(recipient.name || '').trim(),
+          String(eventName || '').trim(),
+          String(date || '').trim(),
+          String(time || '').trim(),
+          String(venue || '').trim()
+        ]
+      });
 
       const log = await WhatsAppMessage.create({
         to: recipient.mobile,
@@ -191,7 +212,7 @@ async function sendInvitation(req, res) {
           providerResponse,
           recipientName: recipient.name,
           recipientSource: recipient.source,
-          invitation: { imageUrl, eventName, date, time, venue }
+          invitation: { imageUrl, uploadedMediaId, eventName, date, time, venue }
         }
       });
 
@@ -207,6 +228,7 @@ async function sendInvitation(req, res) {
         to: recipient.mobile,
         name: recipient.name,
         source: recipient.source,
+        uploadedMediaId,
         imageUrl,
         eventName,
         date,
@@ -225,7 +247,7 @@ async function sendInvitation(req, res) {
         meta: {
           recipientName: recipient.name,
           recipientSource: recipient.source,
-          invitation: { imageUrl, eventName, date, time, venue },
+          invitation: { imageUrl, uploadedMediaId, eventName, date, time, venue },
           error: error?.response?.data || error.message
         }
       });
