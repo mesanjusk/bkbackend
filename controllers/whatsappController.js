@@ -167,16 +167,23 @@ async function sendInvitation(req, res) {
       fileUrl: imageUrl
     });
     uploadedMediaId = mediaUpload?.id || '';
-    console.log('[whatsapp] uploaded media for template header', {
-      imageUrl,
-      mediaId: uploadedMediaId
-    });
+
+    console.log(
+      '[whatsapp] uploaded media for template header',
+      JSON.stringify(
+        {
+          imageUrl,
+          mediaId: uploadedMediaId
+        },
+        null,
+        2
+      )
+    );
   } catch (error) {
-    console.error('[whatsapp] header media upload failed', {
-      imageUrl,
-      status: error?.response?.status,
-      error: error?.response?.data || error.message
-    });
+    console.error(
+      '[whatsapp] header media upload failed full',
+      JSON.stringify(error?.response?.data || { message: error.message }, null, 2)
+    );
 
     return res.status(500).json({
       message: 'Failed to upload invitation image to WhatsApp',
@@ -188,7 +195,7 @@ async function sendInvitation(req, res) {
 
   for (const recipient of cleanRecipients) {
     try {
-      const providerResponse = await sendTemplateMessage({
+      const payloadPreview = {
         to: recipient.mobile,
         templateName: 'entry_pass',
         languageCode: 'en_US',
@@ -200,8 +207,20 @@ async function sendInvitation(req, res) {
           String(time || '').trim(),
           String(venue || '').trim()
         ]
-      });
+      };
 
+      console.error(
+        '[whatsapp] entry_pass payload full',
+        JSON.stringify(payloadPreview, null, 2)
+      );
+
+      const providerResponse = await sendTemplateMessage({
+        to: recipient.mobile,
+        templateName: 'entry_pass',
+        languageCode: 'en_US',
+        headerImageId: uploadedMediaId,
+        bodyParameters: payloadPreview.bodyParameters
+      });
 
       const log = await WhatsAppMessage.create({
         to: recipient.mobile,
@@ -225,19 +244,30 @@ async function sendInvitation(req, res) {
         ok: true
       });
     } catch (error) {
-      console.error('[whatsapp] entry_pass send failed', {
-        to: recipient.mobile,
-        name: recipient.name,
-        source: recipient.source,
-        uploadedMediaId,
-        imageUrl,
-        eventName,
-        date,
-        time,
-        venue,
-        status: error?.response?.status,
-        error: error?.response?.data || error.message
-      });
+      console.error(
+        '[whatsapp] entry_pass send failed full',
+        JSON.stringify(error?.response?.data || { message: error.message }, null, 2)
+      );
+
+      console.error(
+        '[whatsapp] entry_pass send failed summary',
+        JSON.stringify(
+          {
+            to: recipient.mobile,
+            name: recipient.name,
+            source: recipient.source,
+            uploadedMediaId,
+            imageUrl,
+            eventName,
+            date,
+            time,
+            venue,
+            status: error?.response?.status
+          },
+          null,
+          2
+        )
+      );
 
       await WhatsAppMessage.create({
         to: recipient.mobile,
