@@ -171,7 +171,7 @@ async function sendInvitation(req, res) {
   to: recipient.mobile,
   templateName: 'entry_pass',
   languageCode: 'en_US',
-  headerImageUrl: imageUrl,
+  
   bodyParameters: [
     recipient.name.trim(),
     eventName.trim(),
