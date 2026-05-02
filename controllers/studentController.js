@@ -154,7 +154,7 @@ async function queueStudentConfirmation(student) {
     `• Category: ${student.categoryOther || student.categoryName || 'Selected Category'}\n` +
     `• School: ${student.schoolName || '-'}\n` +
     `• Registration ID: ${registrationId}\n\n` +
-    (editLink ? `📝 *Edit your registration:*\n${editLink}\n\n` : '') +
+    
     `We will review your details and inform you about eligibility.\n` +
     `Stay connected on WhatsApp 📲\n\n` +
     `— BK Scholar Awards Team`;
