@@ -6,6 +6,7 @@ const dotenv = require('dotenv');
 const { Server } = require('socket.io');
 const connectDB = require('./config/db');
 const { setIO } = require('./services/socket');
+const seedAdmin = require("./seedAdmin");
 
 dotenv.config();
 
@@ -60,7 +61,7 @@ app.use('/api/volunteers', require('./routes/volunteerRoutes'));
 async function startServer() {
   try {
     await connectDB();
-
+    await seedAdmin();
     const server = http.createServer(app);
 
     const io = new Server(server, {
