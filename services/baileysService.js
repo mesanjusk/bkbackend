@@ -1,41 +1,61 @@
 /**
  * Baileys WhatsApp service — Fixed Version
  *
- * Fixes applied:
- *  1. isConnecting flag is RESET instead of blocking — prevents silent no-op on re-connect.
- *  2. Auto-connects on server boot if saved credentials exist.
- *  3. QR code refreshes automatically — each new QR from WhatsApp is emitted immediately.
- *  4. Stable reconnect with back-off + max attempt cap — survives transient disconnects.
- *  5. Does NOT wrap keys with makeCacheableSignalKeyStore (MongoDB adapter already caches).
- *  6. Passes auth object directly as { creds, keys }.
- *  7. Browser fingerprint so WA treats session as WhatsApp Web.
- *  8. Pinned WA version — avoids fetchLatestBaileysVersion() timing out on Render.
- *  9. reconnectCount reset on successful connect.
+ * KEY FIX for code=405 rejection:
+ *   WhatsApp servers reject connections with a stale/pinned version.
+ *   This version now calls fetchLatestBaileysVersion() each time connect()
+ *   is called, with a 10s timeout and fallback so Render cold-starts don't hang.
+ *
+ * Other fixes:
+ *  - isConnecting flag RESETS instead of blocking (prevents silent no-op)
+ *  - QR emitted immediately on arrival
+ *  - Exponential back-off reconnect with max attempt cap
+ *  - Auth passed directly as { creds, keys } — no double-wrapping
+ *  - Browser fingerprint for WA Web session
+ *  - code=405 now clears credentials and stops retry loop
  */
 
 const { emitEvent } = require('./socket');
 const { useMongoAuthState, clearMongoAuthState } = require('./baileysAuthState');
 
-// Stable WA Web version — update periodically if connections start failing
-const WA_VERSION = [2, 3000, 1023024415];
+// Fallback only — used if version fetch fails or times out
+const WA_VERSION_FALLBACK = [2, 3000, 1023024415];
 
-// Max reconnect attempts before giving up (prevents infinite loops on bad credentials)
+// Max reconnect attempts before giving up
 const MAX_RECONNECT_ATTEMPTS = 5;
 
-let baileysState     = { qr: null, status: 'DISCONNECTED', phone: '' };
-let baileysSocket    = null;
-let reconnectTimer   = null;
-let isConnecting     = false;
-let reconnectCount   = 0;
+let baileysState   = { qr: null, status: 'DISCONNECTED', phone: '' };
+let baileysSocket  = null;
+let reconnectTimer = null;
+let isConnecting   = false;
+let reconnectCount = 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-async function loadMakeWASocket() {
+async function loadBaileys() {
   try {
     const mod = await import('@whiskeysockets/baileys');
-    return mod.default ?? mod.makeWASocket ?? mod;
+    return mod.default ?? mod;
   } catch {
     throw new Error('Baileys not installed. Run: npm install @whiskeysockets/baileys qrcode pino');
+  }
+}
+
+async function getWAVersion(baileysMod) {
+  try {
+    const result = await Promise.race([
+      baileysMod.fetchLatestBaileysVersion(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
+    ]);
+    const version = result?.version;
+    if (Array.isArray(version) && version.length === 3) {
+      console.log('[baileys] live WA version:', version.join('.'));
+      return version;
+    }
+    throw new Error('bad version shape');
+  } catch (e) {
+    console.warn('[baileys] version fetch failed (' + e.message + ') — using fallback:', WA_VERSION_FALLBACK.join('.'));
+    return WA_VERSION_FALLBACK;
   }
 }
 
@@ -84,9 +104,6 @@ function getStatus() {
 }
 
 async function connect() {
-  // FIX: Reset stuck isConnecting flag instead of silently returning.
-  // Previously, if Baileys crashed mid-connect, isConnecting stayed true forever,
-  // blocking every subsequent Connect button click with zero logs or errors.
   if (isConnecting) {
     console.log('[baileys] resetting stuck isConnecting flag and retrying...');
     isConnecting = false;
@@ -99,14 +116,18 @@ async function connect() {
   killSocket();
 
   try {
-    const makeWASocket = await loadMakeWASocket();
-    const pino = (await import('pino')).default;
-    const logger = pino({ level: 'silent' });
+    const baileysMod   = await loadBaileys();
+    const makeWASocket = baileysMod.makeWASocket ?? baileysMod.default ?? baileysMod;
+    const pino         = (await import('pino')).default;
+    const logger       = pino({ level: 'silent' });
+
+    // KEY FIX: fetch live WA version — stale pinned version causes code=405
+    const version = await getWAVersion(baileysMod);
 
     const { state, saveCreds } = await useMongoAuthState();
 
     const sock = makeWASocket({
-      version:  WA_VERSION,
+      version,
       logger,
       printQRInTerminal: false,
       auth: {
@@ -124,11 +145,9 @@ async function connect() {
 
     baileysSocket = sock;
 
-    // ── connection lifecycle ──────────────────────────────────────────────────
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      // Every new QR from WhatsApp is immediately emitted — no manual refresh needed
       if (qr) {
         console.log('[baileys] New QR received — emitting to dashboard');
         const qrDataUrl = await toQrDataUrl(qr);
@@ -142,29 +161,29 @@ async function connect() {
         emitEvent('baileys_status', baileysState);
         console.log('[baileys] connected as +' + phone);
         isConnecting   = false;
-        reconnectCount = 0; // reset on successful connection
+        reconnectCount = 0;
       }
 
       if (connection === 'close') {
-        const err      = lastDisconnect?.error;
-        const code     = err?.output?.statusCode;
+        const err       = lastDisconnect?.error;
+        const code      = err?.output?.statusCode;
         const loggedOut = code === 401;
 
         console.log('[baileys] disconnected code=' + code + ' loggedOut=' + loggedOut);
 
-        baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
-        emitEvent('baileys_status', baileysState);
+        baileysState  = { qr: null, status: 'DISCONNECTED', phone: '' };
         baileysSocket = null;
         isConnecting  = false;
+        emitEvent('baileys_status', baileysState);
 
-        if (loggedOut) {
+        if (loggedOut || code === 405) {
+          // 401 = logged out, 405 = session rejected — both need fresh QR
           await clearMongoAuthState().catch(console.error);
           reconnectCount = 0;
-          console.log('[baileys] logged out — credentials cleared. Scan QR again to reconnect.');
+          console.log(`[baileys] code=${code} — session rejected/logged out. Credentials cleared. Click Connect for a fresh QR.`);
         } else {
           reconnectCount++;
           if (reconnectCount <= MAX_RECONNECT_ATTEMPTS) {
-            // Exponential back-off: 5s, 8s, 12s, 18s, 25s
             const delay = Math.min(5000 * reconnectCount, 25000);
             console.log(`[baileys] reconnecting in ${delay}ms (attempt ${reconnectCount}/${MAX_RECONNECT_ATTEMPTS})…`);
             reconnectTimer = setTimeout(() => connect().catch(console.error), delay);
@@ -201,8 +220,8 @@ async function disconnect() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   killSocket();
   await clearMongoAuthState().catch(console.error);
-  baileysState  = { qr: null, status: 'DISCONNECTED', phone: '' };
-  isConnecting  = false;
+  baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
+  isConnecting = false;
   emitEvent('baileys_status', baileysState);
   console.log('[baileys] disconnected and credentials cleared.');
 }
@@ -221,14 +240,9 @@ async function sendImage({ to, imageUrl, caption = '' }) {
   return baileysSocket.sendMessage(formatJid(to), { image: { url: imageUrl }, caption });
 }
 
-/**
- * Auto-connect on server boot if saved credentials exist.
- * Called from app.js / server.js after DB connection is ready.
- */
 async function autoConnectIfCredentialsExist() {
   try {
     const { state } = await useMongoAuthState();
-    // If creds exist and have a me/noiseKey, we have a saved session
     const hasCreds = state?.creds?.me || state?.creds?.noiseKey;
     if (hasCreds) {
       console.log('[baileys] Saved credentials found — auto-connecting on boot…');
