@@ -1,6 +1,7 @@
 const BaileysMessage = require('../models/BaileysMessage');
-const Notification = require('../models/Notification');
-const { emitEvent } = require('../services/socket');
+const BaileysRule    = require('../models/WhatsAppAutoReplyRule'); // reuse same schema
+const Notification   = require('../models/Notification');
+const { emitEvent }  = require('../services/socket');
 const baileysService = require('../services/baileysService');
 
 function normalizePhone(value) {
@@ -223,6 +224,33 @@ async function sendInvitation(req, res) {
   });
 }
 
+// ── Auto-reply rules ──────────────────────────────────────────────────────────
+
+async function getRules(req, res) {
+  try {
+    const rules = await BaileysRule.find().sort({ priority: 1, createdAt: -1 }).lean();
+    res.json(rules);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+async function saveRule(req, res) {
+  try {
+    const { id } = req.params;
+    let rule;
+    if (id) {
+      rule = await BaileysRule.findByIdAndUpdate(id, req.body, { new: true, runValidators: true });
+      if (!rule) return res.status(404).json({ message: 'Rule not found' });
+    } else {
+      rule = await BaileysRule.create(req.body);
+    }
+    res.json(rule);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
 // ── Incoming (called from baileysService event) ───────────────────────────────
 
 async function saveIncomingMessage({ id, from, body, type, raw }) {
@@ -282,4 +310,6 @@ module.exports = {
   sendText,
   getLogs,
   sendInvitation,
+  getRules,
+  saveRule,
 };
