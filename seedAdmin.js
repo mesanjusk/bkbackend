@@ -1,21 +1,32 @@
- // seedAdmin.js
 const User = require("./models/User");
-const bcrypt = require("bcryptjs");
+const Role = require("./models/Role");
 
 async function seedAdmin() {
-  const exists = await User.findOne({ email: "admin@example.com" });
+  // 1. Ensure admin role exists
+  let adminRole = await Role.findOne({ name: "admin" });
+
+  if (!adminRole) {
+    adminRole = await Role.create({
+      name: "admin",
+      code: "ADMIN"
+    });
+    console.log("✅ Admin role created");
+  }
+
+  // 2. Check if admin user exists
+  const exists = await User.findOne({ username: "admin" });
 
   if (!exists) {
-    const hashed = await bcrypt.hash("admin123", 10);
-
     await User.create({
       name: "Admin",
-      email: "admin@example.com",
-      password: hashed,
-      role: "admin",
+      username: "admin",
+      password: "admin123",   // ✅ plain password (will auto-hash)
+      roleId: adminRole._id,
     });
 
-    console.log("Admin created");
+    console.log("✅ Admin user created");
+  } else {
+    console.log("ℹ️ Admin already exists");
   }
 }
 
