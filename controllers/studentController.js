@@ -141,9 +141,10 @@ async function queueStudentConfirmation(student) {
 
   const frontendUrl   = process.env.FRONTEND_URL || 'https://bkawards.instify.in';
   const editLink      = editToken ? `${frontendUrl}/register/edit/${editToken}` : '';
-  const registrationId = editToken
-    ? editToken.slice(-8).toUpperCase()
-    : String(student._id).slice(-8).toUpperCase();
+
+  const percentageDisplay = student.percentage
+    ? `${student.percentage}%`
+    : 'N/A';
 
   const confirmationText =
     `✅ *Registration Confirmed!*\n\n` +
@@ -151,10 +152,9 @@ async function queueStudentConfirmation(student) {
     `Your registration for *BK Scholar Awards 2026* has been received successfully.\n\n` +
     `📋 *Details:*\n` +
     `• Name: ${student.fullName}\n` +
-    `• Category: ${student.categoryOther || student.categoryName || 'Selected Category'}\n` +
+    `• Selected Category: ${student.categoryOther || student.categoryName || 'Selected Category'}\n` +
     `• School: ${student.schoolName || '-'}\n` +
-    `• Registration ID: ${registrationId}\n\n` +
-    
+    `• Percentage: ${percentageDisplay}\n\n` +
     `We will review your details and inform you about eligibility.\n` +
     `Stay connected on WhatsApp 📲\n\n` +
     `— BK Scholar Awards Team`;
