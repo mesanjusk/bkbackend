@@ -2,10 +2,13 @@ const mongoose = require('mongoose');
 const Student = require('../models/Student');
 const Category = require('../models/Category');
 const WhatsAppMessage = require('../models/WhatsAppMessage');
+const BaileysMessage = require('../models/BaileysMessage');
 const Notification = require('../models/Notification');
 const { doesMatch, getCalculatedPercentage } = require('../services/matchService');
 const { emitEvent } = require('../services/socket');
-const { sendTemplateMessage, sendTextMessage } = require('../services/whatsappService');
+const { sendTemplateMessage } = require('../services/whatsappService');
+const baileysService = require('../services/baileysService');
+const { getSettingValue } = require('./systemSettingsController');
 
 function getBoardFromCategory(category) {
   if (!category) return '';
@@ -68,13 +71,8 @@ function normalizeStudentPayload(body, board = '') {
     payload.categoryId = null;
   }
 
-  if (!payload.categoryOther) {
-    payload.categoryOther = '';
-  }
-
-  if (!payload.gender) {
-    payload.gender = '';
-  }
+  if (!payload.categoryOther) payload.categoryOther = '';
+  if (!payload.gender) payload.gender = '';
 
   if (payload.studentPhotoUrl && !payload.certificatePhotoUrl) {
     payload.certificatePhotoUrl = payload.studentPhotoUrl;
@@ -83,13 +81,19 @@ function normalizeStudentPayload(body, board = '') {
   return calculatePercentIfNeeded(payload, board);
 }
 
+// ── WhatsApp confirmation on registration ────────────────────────────────────
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
-  // ── Decide provider from super-admin setting ──────────────────────────────
-  const provider = await getSettingValue('registration_whatsapp_provider', 'official');
-  const useBaileys = provider === 'baileys';
+  // Read provider from DB setting — defaults to 'baileys'
+  let provider = 'baileys';
+  try {
+    provider = await getSettingValue('registration_whatsapp_provider', 'baileys');
+  } catch (e) {
+    console.error('queueStudentConfirmation: could not read provider setting, using baileys', e.message);
+  }
 
+  const useBaileys = provider === 'baileys';
   const editToken = student.publicEditToken;
 
   const confirmationText =
@@ -100,11 +104,11 @@ async function queueStudentConfirmation(student) {
 
   try {
     if (useBaileys) {
-      // ── Send via Baileys ──────────────────────────────────────────────────
+      // ── Baileys (WhatsApp Web) ──────────────────────────────────────────
       await baileysService.sendText({ to: student.mobile, body: confirmationText });
 
       await BaileysMessage.create({
-        to: student.mobile,
+        to: String(student.mobile).replace(/[^\d]/g, ''),
         from: '',
         contactName: student.fullName,
         conversationKey: String(student.mobile).replace(/[^\d]/g, ''),
@@ -113,10 +117,11 @@ async function queueStudentConfirmation(student) {
         messageType: 'TEXT',
         bodyText: confirmationText,
         status: 'SENT',
-        meta: { trigger: 'registration_confirmation', provider: 'baileys' },
-      });
+        meta: { trigger: 'registration_confirmation', provider: 'baileys' }
+      }).catch(() => null);
+
     } else {
-      // ── Send via Official Meta Cloud API (original behaviour) ─────────────
+      // ── Official Meta Cloud API ─────────────────────────────────────────
       await sendTemplateMessage({
         to: student.mobile,
         templateName: 'bk_award',
@@ -126,9 +131,9 @@ async function queueStudentConfirmation(student) {
           {
             sub_type: 'url',
             index: 0,
-            parameters: [{ type: 'text', text: editToken }],
-          },
-        ],
+            parameters: [{ type: 'text', text: editToken }]
+          }
+        ]
       });
 
       await WhatsAppMessage.create({
@@ -138,28 +143,29 @@ async function queueStudentConfirmation(student) {
         status: 'SENT',
         relatedEntityType: 'Student',
         relatedEntityId: String(student._id),
-        bodyText: confirmationText,
-      });
+        bodyText: confirmationText
+      }).catch(() => null);
     }
 
     await Notification.create({
       title: 'Student confirmation sent',
       message: `Registration confirmation sent for ${student.fullName} via ${useBaileys ? 'Baileys' : 'Official API'}`,
       type: 'WHATSAPP',
-      targetRoles: ['ADMIN', 'SENIOR_TEAM'],
-    });
+      targetRoles: ['ADMIN', 'SENIOR_TEAM']
+    }).catch(() => null);
 
     student.whatsappConfirmationSentAt = new Date();
     await student.save();
 
     emitEvent('whatsapp_message_logged', { to: student.mobile, studentId: student._id });
+
   } catch (error) {
     console.error('queueStudentConfirmation error:', error?.response?.data || error.message || error);
 
-    // Log failure to the appropriate collection
+    // Log failure
     if (useBaileys) {
       await BaileysMessage.create({
-        to: student.mobile,
+        to: String(student.mobile).replace(/[^\d]/g, ''),
         contactName: student.fullName,
         conversationKey: String(student.mobile).replace(/[^\d]/g, ''),
         direction: 'OUTGOING',
@@ -167,7 +173,7 @@ async function queueStudentConfirmation(student) {
         messageType: 'TEXT',
         bodyText: confirmationText,
         status: 'FAILED',
-        meta: { trigger: 'registration_confirmation', provider: 'baileys', error: error.message },
+        meta: { trigger: 'registration_confirmation', provider: 'baileys', error: error.message }
       }).catch(() => null);
     } else {
       await WhatsAppMessage.create({
@@ -177,7 +183,7 @@ async function queueStudentConfirmation(student) {
         status: 'FAILED',
         relatedEntityType: 'Student',
         relatedEntityId: String(student._id),
-        bodyText: `Failed to send registration confirmation to ${student.fullName}`,
+        bodyText: `Failed to send registration confirmation to ${student.fullName}`
       }).catch(() => null);
     }
 
@@ -185,13 +191,14 @@ async function queueStudentConfirmation(student) {
       title: 'Student confirmation failed',
       message: `Registration confirmation failed for ${student.fullName}`,
       type: 'WHATSAPP',
-      targetRoles: ['ADMIN', 'SENIOR_TEAM'],
+      targetRoles: ['ADMIN', 'SENIOR_TEAM']
     }).catch(() => null);
 
-    throw error;
+    // Don't re-throw — registration itself succeeded, don't fail it over WhatsApp
   }
 }
 
+// ── Public categories ────────────────────────────────────────────────────────
 async function getPublicCategories(req, res) {
   try {
     const docs = await Category.find({
@@ -213,6 +220,7 @@ async function getPublicCategories(req, res) {
   }
 }
 
+// ── Students CRUD ─────────────────────────────────────────────────────────────
 async function getStudents(req, res) {
   try {
     const docs = await Student.find()
@@ -239,17 +247,12 @@ async function createStudent(req, res) {
     const payload = normalizeStudentPayload(req.body, board);
 
     const doc = await Student.create(payload);
-    emitEvent('student_form_submitted', {
-      studentId: doc._id,
-      fullName: doc.fullName
-    });
+    emitEvent('student_form_submitted', { studentId: doc._id, fullName: doc.fullName });
 
     res.status(201).json(doc);
   } catch (error) {
     console.error('createStudent error:', error);
-    res.status(error.statusCode || 500).json({
-      message: error.message || 'Failed to create student'
-    });
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to create student' });
   }
 }
 
@@ -265,16 +268,15 @@ async function createPublicStudent(req, res) {
     const payload = normalizeStudentPayload(req.body, board);
 
     const doc = await Student.create(payload);
-    await queueStudentConfirmation(doc);
 
-    emitEvent('student_public_registered', {
-      studentId: doc._id,
-      fullName: doc.fullName
-    });
+    // Fire-and-forget — don't await so registration response is instant
+    queueStudentConfirmation(doc).catch((e) =>
+      console.error('queueStudentConfirmation background error:', e.message)
+    );
 
-    res.status(201).json({
-      message: 'Registration submitted successfully'
-    });
+    emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
+
+    res.status(201).json({ message: 'Registration submitted successfully' });
   } catch (error) {
     console.error('createPublicStudent error:', error);
     res.status(error.statusCode || 500).json({
@@ -289,9 +291,7 @@ async function getPublicStudentByToken(req, res) {
       .populate('matchedCategoryIds')
       .populate('categoryId');
 
-    if (!doc) {
-      return res.status(404).json({ message: 'Student form not found' });
-    }
+    if (!doc) return res.status(404).json({ message: 'Student form not found' });
 
     res.json(doc);
   } catch (error) {
@@ -322,21 +322,14 @@ async function updatePublicStudentByToken(req, res) {
       .populate('matchedCategoryIds')
       .populate('categoryId');
 
-    if (!doc) {
-      return res.status(404).json({ message: 'Student form not found' });
-    }
+    if (!doc) return res.status(404).json({ message: 'Student form not found' });
 
-    emitEvent('student_public_updated', {
-      studentId: doc._id,
-      fullName: doc.fullName
-    });
+    emitEvent('student_public_updated', { studentId: doc._id, fullName: doc.fullName });
 
     res.json(doc);
   } catch (error) {
     console.error('updatePublicStudentByToken error:', error);
-    res.status(error.statusCode || 500).json({
-      message: error.message || 'Failed to update student form'
-    });
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to update student form' });
   }
 }
 
@@ -361,25 +354,19 @@ async function updateStudent(req, res) {
       .populate('matchedCategoryIds')
       .populate('categoryId');
 
-    if (!doc) {
-      return res.status(404).json({ message: 'Student not found' });
-    }
+    if (!doc) return res.status(404).json({ message: 'Student not found' });
 
     res.json(doc);
   } catch (error) {
     console.error('updateStudent error:', error);
-    res.status(error.statusCode || 500).json({
-      message: error.message || 'Failed to update student'
-    });
+    res.status(error.statusCode || 500).json({ message: error.message || 'Failed to update student' });
   }
 }
 
 async function parseStudent(req, res) {
   try {
     const student = await Student.findById(req.params.id).populate('categoryId');
-    if (!student) {
-      return res.status(404).json({ message: 'Student not found' });
-    }
+    if (!student) return res.status(404).json({ message: 'Student not found' });
 
     student.status = 'Processing';
     student.rawExtractedText =
@@ -398,10 +385,7 @@ async function parseStudent(req, res) {
     }
 
     await student.save();
-    emitEvent('student_parsed', {
-      studentId: student._id,
-      confidence: student.extractionConfidence
-    });
+    emitEvent('student_parsed', { studentId: student._id, confidence: student.extractionConfidence });
 
     res.json(student);
   } catch (error) {
@@ -413,9 +397,7 @@ async function parseStudent(req, res) {
 async function evaluateStudent(req, res) {
   try {
     const student = await Student.findById(req.params.id).populate('categoryId');
-    if (!student) {
-      return res.status(404).json({ message: 'Student not found' });
-    }
+    if (!student) return res.status(404).json({ message: 'Student not found' });
 
     const categories = await Category.find({ isActive: true });
     const matched = categories.filter((cat) => doesMatch(student, cat));
