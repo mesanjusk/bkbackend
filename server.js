@@ -36,27 +36,29 @@ app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 app.get('/', (req, res) => res.send('Scholar Awards Event Backend running'));
 
-app.use('/api/auth', require('./routes/authRoutes'));
-app.use('/api/dashboard', require('./routes/dashboardRoutes'));
-app.use('/api/roles', require('./routes/crudRoutes')(require('./models/Role')));
-app.use('/api/users', require('./routes/userRoutes'));
-app.use('/api/events', require('./routes/crudRoutes')(require('./models/Event')));
-app.use('/api/categories', require('./routes/crudRoutes')(require('./models/Category'), 'anchorId backupAnchorIds preferredGuestIds'));
-app.use('/api/students', require('./routes/studentRoutes'));
-app.use('/api/stage-assignments', require('./routes/stageRoutes'));
-app.use('/api/notifications', require('./routes/crudRoutes')(require('./models/Notification')));
-app.use('/api/donations', require('./routes/crudRoutes')(require('./models/Donation'), 'donorGuestId receivedByUserId'));
-app.use('/api/automation-rules', require('./routes/crudRoutes')(require('./models/AutomationRule')));
+app.use('/api/auth',                require('./routes/authRoutes'));
+app.use('/api/dashboard',           require('./routes/dashboardRoutes'));
+app.use('/api/roles',               require('./routes/crudRoutes')(require('./models/Role')));
+app.use('/api/users',               require('./routes/userRoutes'));
+app.use('/api/events',              require('./routes/crudRoutes')(require('./models/Event')));
+app.use('/api/categories',          require('./routes/crudRoutes')(require('./models/Category'), 'anchorId backupAnchorIds preferredGuestIds'));
+app.use('/api/students',            require('./routes/studentRoutes'));
+app.use('/api/stage-assignments',   require('./routes/stageRoutes'));
+app.use('/api/notifications',       require('./routes/crudRoutes')(require('./models/Notification')));
+app.use('/api/donations',           require('./routes/crudRoutes')(require('./models/Donation'), 'donorGuestId receivedByUserId'));
+app.use('/api/automation-rules',    require('./routes/crudRoutes')(require('./models/AutomationRule')));
 app.use('/api/certificate-templates', require('./routes/crudRoutes')(require('./models/CertificateTemplate')));
-app.use('/api/teams', require('./routes/crudRoutes')(require('./models/Team'), 'leadUserId memberUserIds'));
-app.use('/api/budget-heads', require('./routes/crudRoutes')(require('./models/BudgetHead'), 'responsibleTeamId responsibleUserId'));
-app.use('/api/vendors', require('./routes/crudRoutes')(require('./models/Vendor'), 'budgetHeadId responsibleTeamId responsibleUserId'));
-app.use('/api/expenses', require('./routes/crudRoutes')(require('./models/Expense'), 'budgetHeadId vendorId paidByUserId approvedByUserId'));
-app.use('/api/event-tasks', require('./routes/crudRoutes')(require('./models/EventTask'), 'teamId assignedToUserId backupUserId linkedVendorId'));
-app.use('/api/whatsapp', require('./routes/whatsappRoutes'));
-app.use('/api/baileys', require('./routes/baileysRoutes'));
-app.use('/api/uploads', require('./routes/uploadRoutes'));
-app.use('/api/volunteers', require('./routes/volunteerRoutes'));
+app.use('/api/teams',               require('./routes/crudRoutes')(require('./models/Team'), 'leadUserId memberUserIds'));
+app.use('/api/budget-heads',        require('./routes/crudRoutes')(require('./models/BudgetHead'), 'responsibleTeamId responsibleUserId'));
+app.use('/api/vendors',             require('./routes/crudRoutes')(require('./models/Vendor'), 'budgetHeadId responsibleTeamId responsibleUserId'));
+app.use('/api/expenses',            require('./routes/crudRoutes')(require('./models/Expense'), 'budgetHeadId vendorId paidByUserId approvedByUserId'));
+app.use('/api/event-tasks',         require('./routes/crudRoutes')(require('./models/EventTask'), 'teamId assignedToUserId backupUserId linkedVendorId'));
+app.use('/api/whatsapp',            require('./routes/whatsappRoutes'));
+app.use('/api/baileys',             require('./routes/baileysRoutes'));
+app.use('/api/uploads',             require('./routes/uploadRoutes'));
+app.use('/api/volunteers',          require('./routes/volunteerRoutes'));
+app.use('/api/system-settings',     require('./routes/systemSettingsRoutes'));   // ← NEW
+
 
 async function startServer() {
   try {

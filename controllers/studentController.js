@@ -86,47 +86,67 @@ function normalizeStudentPayload(body, board = '') {
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
+  // ── Decide provider from super-admin setting ──────────────────────────────
+  const provider = await getSettingValue('registration_whatsapp_provider', 'official');
+  const useBaileys = provider === 'baileys';
+
   const editToken = student.publicEditToken;
 
-  try {
-    await sendTemplateMessage({
-      to: student.mobile,
-      templateName: 'bk_award',
-      languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
-      bodyParameters: [student.fullName],
-      buttonParameters: [
-        {
-          sub_type: 'url',
-          index: 0,
-          parameters: [
-            {
-              type: 'text',
-              text: editToken
-            }
-          ]
-        }
-      ]
-    });
+  const confirmationText =
+    `Hello ${student.fullName}, ` +
+    `Your registration for BK Scholar Awards 2026 has been received successfully ✅ ` +
+    `We will review your details and check your eligibility for the selected category. ` +
+    `Please stay connected with us on WhatsApp for further updates 📲`;
 
-    await WhatsAppMessage.create({
-      to: student.mobile,
-      templateName: 'bk_award',
-      messageType: 'TEMPLATE',
-      status: 'SENT',
-      relatedEntityType: 'Student',
-      relatedEntityId: String(student._id),
-      bodyText:
-        `Hello ${student.fullName}, ` +
-        `Your registration for BK Scholar Awards 2026 has been received successfully ✅ ` +
-        `We will review your details and check your eligibility for the selected category. ` +
-        `Please stay connected with us on WhatsApp for further updates 📲`
-    });
+  try {
+    if (useBaileys) {
+      // ── Send via Baileys ──────────────────────────────────────────────────
+      await baileysService.sendText({ to: student.mobile, body: confirmationText });
+
+      await BaileysMessage.create({
+        to: student.mobile,
+        from: '',
+        contactName: student.fullName,
+        conversationKey: String(student.mobile).replace(/[^\d]/g, ''),
+        direction: 'OUTGOING',
+        source: 'AUTO',
+        messageType: 'TEXT',
+        bodyText: confirmationText,
+        status: 'SENT',
+        meta: { trigger: 'registration_confirmation', provider: 'baileys' },
+      });
+    } else {
+      // ── Send via Official Meta Cloud API (original behaviour) ─────────────
+      await sendTemplateMessage({
+        to: student.mobile,
+        templateName: 'bk_award',
+        languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+        bodyParameters: [student.fullName],
+        buttonParameters: [
+          {
+            sub_type: 'url',
+            index: 0,
+            parameters: [{ type: 'text', text: editToken }],
+          },
+        ],
+      });
+
+      await WhatsAppMessage.create({
+        to: student.mobile,
+        templateName: 'bk_award',
+        messageType: 'TEMPLATE',
+        status: 'SENT',
+        relatedEntityType: 'Student',
+        relatedEntityId: String(student._id),
+        bodyText: confirmationText,
+      });
+    }
 
     await Notification.create({
       title: 'Student confirmation sent',
-      message: `Registration confirmation sent for ${student.fullName}`,
+      message: `Registration confirmation sent for ${student.fullName} via ${useBaileys ? 'Baileys' : 'Official API'}`,
       type: 'WHATSAPP',
-      targetRoles: ['ADMIN', 'SENIOR_TEAM']
+      targetRoles: ['ADMIN', 'SENIOR_TEAM'],
     });
 
     student.whatsappConfirmationSentAt = new Date();
@@ -136,22 +156,37 @@ async function queueStudentConfirmation(student) {
   } catch (error) {
     console.error('queueStudentConfirmation error:', error?.response?.data || error.message || error);
 
-    await WhatsAppMessage.create({
-      to: student.mobile,
-      templateName: 'bk_award',
-      messageType: 'TEMPLATE',
-      status: 'FAILED',
-      relatedEntityType: 'Student',
-      relatedEntityId: String(student._id),
-      bodyText: `Failed to send registration confirmation to ${student.fullName}`
-    });
+    // Log failure to the appropriate collection
+    if (useBaileys) {
+      await BaileysMessage.create({
+        to: student.mobile,
+        contactName: student.fullName,
+        conversationKey: String(student.mobile).replace(/[^\d]/g, ''),
+        direction: 'OUTGOING',
+        source: 'AUTO',
+        messageType: 'TEXT',
+        bodyText: confirmationText,
+        status: 'FAILED',
+        meta: { trigger: 'registration_confirmation', provider: 'baileys', error: error.message },
+      }).catch(() => null);
+    } else {
+      await WhatsAppMessage.create({
+        to: student.mobile,
+        templateName: 'bk_award',
+        messageType: 'TEMPLATE',
+        status: 'FAILED',
+        relatedEntityType: 'Student',
+        relatedEntityId: String(student._id),
+        bodyText: `Failed to send registration confirmation to ${student.fullName}`,
+      }).catch(() => null);
+    }
 
     await Notification.create({
       title: 'Student confirmation failed',
       message: `Registration confirmation failed for ${student.fullName}`,
       type: 'WHATSAPP',
-      targetRoles: ['ADMIN', 'SENIOR_TEAM']
-    });
+      targetRoles: ['ADMIN', 'SENIOR_TEAM'],
+    }).catch(() => null);
 
     throw error;
   }
