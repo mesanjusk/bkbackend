@@ -2,25 +2,26 @@ const User = require("./models/User");
 const Role = require("./models/Role");
 
 async function seedAdmin() {
-  // 1. Ensure admin role exists
-  let adminRole = await Role.findOne({ name: "admin" });
-
-  if (!adminRole) {
-    adminRole = await Role.create({
+  // ✅ Use upsert to avoid duplicate errors
+  const adminRole = await Role.findOneAndUpdate(
+    { code: "ADMIN" },   // 🔥 use unique field
+    {
       name: "admin",
       code: "ADMIN"
-    });
-    console.log("✅ Admin role created");
-  }
+    },
+    { new: true, upsert: true }
+  );
 
-  // 2. Check if admin user exists
+  console.log("✅ Admin role ready");
+
+  // Check if user exists
   const exists = await User.findOne({ username: "admin" });
 
   if (!exists) {
     await User.create({
       name: "Admin",
       username: "admin",
-      password: "admin123",   // ✅ plain password (will auto-hash)
+      password: "admin123",   // auto-hashed
       roleId: adminRole._id,
     });
 
