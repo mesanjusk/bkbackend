@@ -2,13 +2,15 @@
  * Baileys WhatsApp service — Fixed Version
  *
  * Fixes applied:
- *  1. Auto-connects on server boot if saved credentials exist (no manual click needed).
- *  2. QR code refreshes automatically — each new QR from WhatsApp is emitted immediately.
- *  3. Stable reconnect with back-off — survives transient disconnects.
- *  4. Does NOT wrap keys with makeCacheableSignalKeyStore (our MongoDB adapter already caches).
- *  5. Passes auth object directly as { creds, keys }.
- *  6. Browser fingerprint so WA treats session as WhatsApp Web.
- *  7. Pinned WA version — avoids fetchLatestBaileysVersion() timing out on Render.
+ *  1. isConnecting flag is RESET instead of blocking — prevents silent no-op on re-connect.
+ *  2. Auto-connects on server boot if saved credentials exist.
+ *  3. QR code refreshes automatically — each new QR from WhatsApp is emitted immediately.
+ *  4. Stable reconnect with back-off + max attempt cap — survives transient disconnects.
+ *  5. Does NOT wrap keys with makeCacheableSignalKeyStore (MongoDB adapter already caches).
+ *  6. Passes auth object directly as { creds, keys }.
+ *  7. Browser fingerprint so WA treats session as WhatsApp Web.
+ *  8. Pinned WA version — avoids fetchLatestBaileysVersion() timing out on Render.
+ *  9. reconnectCount reset on successful connect.
  */
 
 const { emitEvent } = require('./socket');
@@ -82,11 +84,16 @@ function getStatus() {
 }
 
 async function connect() {
+  // FIX: Reset stuck isConnecting flag instead of silently returning.
+  // Previously, if Baileys crashed mid-connect, isConnecting stayed true forever,
+  // blocking every subsequent Connect button click with zero logs or errors.
   if (isConnecting) {
-    console.log('[baileys] connect() already in progress, skipping');
-    return;
+    console.log('[baileys] resetting stuck isConnecting flag and retrying...');
+    isConnecting = false;
   }
   isConnecting = true;
+
+  console.log('[baileys] connect() called — starting Baileys socket...');
 
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   killSocket();
@@ -121,7 +128,7 @@ async function connect() {
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      // FIX: Every new QR from WhatsApp is immediately emitted — no refresh needed
+      // Every new QR from WhatsApp is immediately emitted — no manual refresh needed
       if (qr) {
         console.log('[baileys] New QR received — emitting to dashboard');
         const qrDataUrl = await toQrDataUrl(qr);
@@ -197,6 +204,7 @@ async function disconnect() {
   baileysState  = { qr: null, status: 'DISCONNECTED', phone: '' };
   isConnecting  = false;
   emitEvent('baileys_status', baileysState);
+  console.log('[baileys] disconnected and credentials cleared.');
 }
 
 async function sendText({ to, body }) {
@@ -219,8 +227,7 @@ async function sendImage({ to, imageUrl, caption = '' }) {
  */
 async function autoConnectIfCredentialsExist() {
   try {
-    const { useMongoAuthState: getState } = require('./baileysAuthState');
-    const { state } = await getState();
+    const { state } = await useMongoAuthState();
     // If creds exist and have a me/noiseKey, we have a saved session
     const hasCreds = state?.creds?.me || state?.creds?.noiseKey;
     if (hasCreds) {

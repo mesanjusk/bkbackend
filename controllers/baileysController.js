@@ -18,9 +18,11 @@ async function getStatus(req, res) {
 
 async function startConnection(req, res) {
   try {
+    console.log('[baileys] /connect hit — starting connection');
     await baileysService.connect();
     res.json({ message: 'Baileys connecting…', status: baileysService.getStatus() });
   } catch (error) {
+    console.error('[baileys] startConnection error:', error.message);
     res.status(500).json({ message: error.message });
   }
 }
@@ -156,11 +158,11 @@ async function sendInvitation(req, res) {
   } = req.body;
 
   const missingFields = [];
-  if (!imageUrl) missingFields.push('imageUrl');
-  if (!eventName) missingFields.push('eventName');
-  if (!date) missingFields.push('date');
-  if (!time) missingFields.push('time');
-  if (!venue) missingFields.push('venue');
+  if (!imageUrl)       missingFields.push('imageUrl');
+  if (!eventName)      missingFields.push('eventName');
+  if (!date)           missingFields.push('date');
+  if (!time)           missingFields.push('time');
+  if (!venue)          missingFields.push('venue');
   if (!recipients.length) missingFields.push('recipients');
 
   if (missingFields.length) {
@@ -168,7 +170,7 @@ async function sendInvitation(req, res) {
   }
 
   let success = 0;
-  let failed = 0;
+  let failed  = 0;
   const errors = [];
 
   const caption = `🎉 *${eventName}*\n📅 ${date}  🕐 ${time}\n📍 ${venue}`;
@@ -178,7 +180,6 @@ async function sendInvitation(req, res) {
     if (!phone) { failed++; continue; }
 
     try {
-      // Send image with caption via Baileys
       await baileysService.sendImage({ to: phone, imageUrl, caption });
 
       await BaileysMessage.create({
