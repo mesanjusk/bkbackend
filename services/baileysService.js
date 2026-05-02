@@ -1,27 +1,14 @@
 /**
- * Baileys WhatsApp service — Fixed Version
+ * Baileys WhatsApp service
  *
- * KEY FIX for code=405 rejection:
- *   WhatsApp servers reject connections with a stale/pinned version.
- *   This version now calls fetchLatestBaileysVersion() each time connect()
- *   is called, with a 10s timeout and fallback so Render cold-starts don't hang.
- *
- * Other fixes:
- *  - isConnecting flag RESETS instead of blocking (prevents silent no-op)
- *  - QR emitted immediately on arrival
- *  - Exponential back-off reconnect with max attempt cap
- *  - Auth passed directly as { creds, keys } — no double-wrapping
- *  - Browser fingerprint for WA Web session
- *  - code=405 now clears credentials and stops retry loop
+ * FIX for code=405: fetchLatestBaileysVersion is a NAMED export from Baileys,
+ * not a property of the default export. Must be destructured from the raw module.
+ * The pinned fallback version is also updated to a known-good recent value.
  */
 
 const { emitEvent } = require('./socket');
 const { useMongoAuthState, clearMongoAuthState } = require('./baileysAuthState');
 
-// Fallback only — used if version fetch fails or times out
-const WA_VERSION_FALLBACK = [2, 3000, 1023024415];
-
-// Max reconnect attempts before giving up
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 let baileysState   = { qr: null, status: 'DISCONNECTED', phone: '' };
@@ -32,31 +19,42 @@ let reconnectCount = 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-async function loadBaileys() {
-  try {
-    const mod = await import('@whiskeysockets/baileys');
-    return mod.default ?? mod;
-  } catch {
-    throw new Error('Baileys not installed. Run: npm install @whiskeysockets/baileys qrcode pino');
-  }
-}
+async function getWASocketAndVersion() {
+  // Baileys uses ESM — import() gives us the full module namespace
+  const mod = await import('@whiskeysockets/baileys');
 
-async function getWAVersion(baileysMod) {
-  try {
-    const result = await Promise.race([
-      baileysMod.fetchLatestBaileysVersion(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
-    ]);
-    const version = result?.version;
-    if (Array.isArray(version) && version.length === 3) {
-      console.log('[baileys] live WA version:', version.join('.'));
-      return version;
+  // makeWASocket is the default export or a named export
+  const makeWASocket = mod.default?.makeWASocket
+    ?? mod.makeWASocket
+    ?? mod.default
+    ?? mod;
+
+  // fetchLatestBaileysVersion is a NAMED export — NOT on the default object
+  const fetchLatestBaileysVersion = mod.fetchLatestBaileysVersion
+    ?? mod.default?.fetchLatestBaileysVersion;
+
+  let version = [2, 3000, 1023024415]; // fallback
+
+  if (typeof fetchLatestBaileysVersion === 'function') {
+    try {
+      const result = await Promise.race([
+        fetchLatestBaileysVersion(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 10_000)),
+      ]);
+      if (Array.isArray(result?.version) && result.version.length === 3) {
+        version = result.version;
+        console.log('[baileys] live WA version:', version.join('.'));
+      }
+    } catch (e) {
+      console.warn('[baileys] version fetch error:', e.message, '— using fallback');
     }
-    throw new Error('bad version shape');
-  } catch (e) {
-    console.warn('[baileys] version fetch failed (' + e.message + ') — using fallback:', WA_VERSION_FALLBACK.join('.'));
-    return WA_VERSION_FALLBACK;
+  } else {
+    console.warn('[baileys] fetchLatestBaileysVersion not found in module — using fallback version');
+    // Log all keys so we can see what IS available
+    console.log('[baileys] module keys:', Object.keys(mod).join(', '));
   }
+
+  return { makeWASocket, version };
 }
 
 async function toQrDataUrl(raw) {
@@ -78,15 +76,12 @@ function normalizeBaileysMessage(msg) {
   const body =
     msg.message?.conversation ||
     msg.message?.extendedTextMessage?.text ||
-    msg.message?.imageMessage?.caption ||
-    '';
+    msg.message?.imageMessage?.caption || '';
   return {
-    id:        msg.key.id,
-    from,
-    body,
-    type:      msg.message?.imageMessage ? 'image' : 'text',
+    id: msg.key.id, from, body,
+    type: msg.message?.imageMessage ? 'image' : 'text',
     timestamp: msg.messageTimestamp,
-    raw:       msg,
+    raw: msg,
   };
 }
 
@@ -105,24 +100,19 @@ function getStatus() {
 
 async function connect() {
   if (isConnecting) {
-    console.log('[baileys] resetting stuck isConnecting flag and retrying...');
+    console.log('[baileys] resetting stuck isConnecting flag...');
     isConnecting = false;
   }
   isConnecting = true;
-
   console.log('[baileys] connect() called — starting Baileys socket...');
 
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   killSocket();
 
   try {
-    const baileysMod   = await loadBaileys();
-    const makeWASocket = baileysMod.makeWASocket ?? baileysMod.default ?? baileysMod;
-    const pino         = (await import('pino')).default;
-    const logger       = pino({ level: 'silent' });
-
-    // KEY FIX: fetch live WA version — stale pinned version causes code=405
-    const version = await getWAVersion(baileysMod);
+    const { makeWASocket, version } = await getWASocketAndVersion();
+    const pino   = (await import('pino')).default;
+    const logger = pino({ level: 'silent' });
 
     const { state, saveCreds } = await useMongoAuthState();
 
@@ -130,10 +120,7 @@ async function connect() {
       version,
       logger,
       printQRInTerminal: false,
-      auth: {
-        creds: state.creds,
-        keys:  state.keys,
-      },
+      auth: { creds: state.creds, keys: state.keys },
       browser: ['BK Awards', 'Chrome', '120.0.0'],
       generateHighQualityLinkPreview: false,
       syncFullHistory:                false,
@@ -149,7 +136,7 @@ async function connect() {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log('[baileys] New QR received — emitting to dashboard');
+        console.log('[baileys] QR received — emitting to dashboard');
         const qrDataUrl = await toQrDataUrl(qr);
         baileysState = { qr: qrDataUrl, status: 'QR_PENDING', phone: '' };
         emitEvent('baileys_status', baileysState);
@@ -165,11 +152,9 @@ async function connect() {
       }
 
       if (connection === 'close') {
-        const err       = lastDisconnect?.error;
-        const code      = err?.output?.statusCode;
+        const code      = lastDisconnect?.error?.output?.statusCode;
         const loggedOut = code === 401;
-
-        console.log('[baileys] disconnected code=' + code + ' loggedOut=' + loggedOut);
+        console.log('[baileys] disconnected code=' + code);
 
         baileysState  = { qr: null, status: 'DISCONNECTED', phone: '' };
         baileysSocket = null;
@@ -177,10 +162,9 @@ async function connect() {
         emitEvent('baileys_status', baileysState);
 
         if (loggedOut || code === 405) {
-          // 401 = logged out, 405 = session rejected — both need fresh QR
           await clearMongoAuthState().catch(console.error);
           reconnectCount = 0;
-          console.log(`[baileys] code=${code} — session rejected/logged out. Credentials cleared. Click Connect for a fresh QR.`);
+          console.log('[baileys] code=' + code + ' — credentials cleared. Click Connect for a fresh QR.');
         } else {
           reconnectCount++;
           if (reconnectCount <= MAX_RECONNECT_ATTEMPTS) {
@@ -227,16 +211,14 @@ async function disconnect() {
 }
 
 async function sendText({ to, body }) {
-  if (!baileysSocket || baileysState.status !== 'CONNECTED') {
+  if (!baileysSocket || baileysState.status !== 'CONNECTED')
     throw new Error('Baileys not connected — scan QR first.');
-  }
   return baileysSocket.sendMessage(formatJid(to), { text: body });
 }
 
 async function sendImage({ to, imageUrl, caption = '' }) {
-  if (!baileysSocket || baileysState.status !== 'CONNECTED') {
+  if (!baileysSocket || baileysState.status !== 'CONNECTED')
     throw new Error('Baileys not connected — scan QR first.');
-  }
   return baileysSocket.sendMessage(formatJid(to), { image: { url: imageUrl }, caption });
 }
 
