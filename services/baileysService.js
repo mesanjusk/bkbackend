@@ -1,147 +1,40 @@
 /**
  * Baileys WhatsApp service
- * Manages a single Baileys connection (scan-to-connect via QR code).
- * All state lives in memory + the auth_info_baileys folder on disk.
+ * Auth state is persisted in MongoDB (via baileysAuthState.js) so it survives
+ * Render / Heroku / any ephemeral-filesystem host redeploys.
  */
-
-let baileys = null;
-let baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
-let baileysSocket = null;
-let saveCreds = null;
-let qrcode = null;
-
-// Lazy-load optional deps so the server boots even if baileys isn't installed yet
-async function loadDeps() {
-  if (!baileys) {
-    try {
-      baileys = await import('@whiskeysockets/baileys');
-      qrcode = (await import('qrcode')).default;
-    } catch (e) {
-      throw new Error('Baileys not installed. Run: npm install @whiskeysockets/baileys qrcode pino');
-    }
-  }
-  return baileys;
-}
 
 const { emitEvent } = require('./socket');
-const path = require('path');
-const AUTH_FOLDER = path.join(process.cwd(), 'baileys_auth');
+const { useMongoAuthState, clearMongoAuthState } = require('./baileysAuthState');
 
-function getStatus() {
-  return baileysState;
-}
+let baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
+let baileysSocket = null;
+let reconnectTimer = null;
 
-async function connect() {
-  const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    DisconnectReason,
-    fetchLatestBaileysVersion,
-    makeCacheableSignalKeyStore,
-  } = await loadDeps();
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-  const { state, saveCreds: _saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-  saveCreds = _saveCreds;
-
-  const { version } = await fetchLatestBaileysVersion();
-
-  const pino = (await import('pino')).default;
-  const logger = pino({ level: 'silent' });
-
-  const sock = baileys.default
-    ? new (baileys.default)({ auth: state, version, logger, printQRInTerminal: false })
-    : makeWASocket({ auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) }, version, logger, printQRInTerminal: false });
-
-  baileysSocket = sock;
-
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      try {
-        const qrDataUrl = await qrcode.toDataURL(qr);
-        baileysState = { ...baileysState, qr: qrDataUrl, status: 'QR_PENDING' };
-        emitEvent('baileys_status', baileysState);
-      } catch (_) {
-        baileysState = { ...baileysState, qr, status: 'QR_PENDING' };
-        emitEvent('baileys_status', baileysState);
-      }
-    }
-
-    if (connection === 'open') {
-      const phone = sock.user?.id?.split(':')[0] || sock.user?.id || '';
-      baileysState = { qr: null, status: 'CONNECTED', phone };
-      emitEvent('baileys_status', baileysState);
-    }
-
-    if (connection === 'close') {
-      const code = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = code !== DisconnectReason.loggedOut;
-      baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
-      emitEvent('baileys_status', baileysState);
-      if (shouldReconnect) {
-        setTimeout(() => connect().catch(console.error), 3000);
-      }
-    }
-  });
-
-  sock.ev.on('creds.update', () => {
-    if (saveCreds) saveCreds();
-  });
-
-  // Incoming messages
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-    for (const msg of messages) {
-      if (!msg.key.fromMe) {
-        emitEvent('baileys_incoming_message', normalizeBaileysMessage(msg));
-      }
-    }
-  });
-
-  return sock;
-}
-
-async function disconnect() {
-  if (baileysSocket) {
-    try { baileysSocket.end(); } catch (_) {}
-    baileysSocket = null;
+async function loadDeps() {
+  try {
+    return await import('@whiskeysockets/baileys');
+  } catch (e) {
+    throw new Error(
+      'Baileys not installed. Run: npm install @whiskeysockets/baileys qrcode pino'
+    );
   }
-  baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
-  emitEvent('baileys_status', baileysState);
 }
 
-/**
- * Send a plain text message via Baileys
- */
-async function sendText({ to, body }) {
-  if (!baileysSocket || baileysState.status !== 'CONNECTED') {
-    throw new Error('Baileys not connected');
+async function toQrDataUrl(raw) {
+  try {
+    const qrcode = (await import('qrcode')).default;
+    return await qrcode.toDataURL(raw);
+  } catch (_) {
+    return raw; // fall back to raw string if qrcode pkg missing
   }
-  const jid = formatJid(to);
-  const result = await baileysSocket.sendMessage(jid, { text: body });
-  return result;
-}
-
-/**
- * Send an image message via Baileys (URL or buffer)
- */
-async function sendImage({ to, imageUrl, caption = '' }) {
-  if (!baileysSocket || baileysState.status !== 'CONNECTED') {
-    throw new Error('Baileys not connected');
-  }
-  const jid = formatJid(to);
-  const result = await baileysSocket.sendMessage(jid, {
-    image: { url: imageUrl },
-    caption,
-  });
-  return result;
 }
 
 function formatJid(phone) {
   const clean = String(phone || '').replace(/\D/g, '');
-  if (clean.includes('@')) return clean;
-  return `${clean}@s.whatsapp.net`;
+  return clean.includes('@') ? clean : `${clean}@s.whatsapp.net`;
 }
 
 function normalizeBaileysMessage(msg) {
@@ -159,6 +52,130 @@ function normalizeBaileysMessage(msg) {
     timestamp: msg.messageTimestamp,
     raw: msg,
   };
+}
+
+// ── public API ────────────────────────────────────────────────────────────────
+
+function getStatus() {
+  return { ...baileysState };
+}
+
+async function connect() {
+  // Clear any pending reconnect
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+  // Close existing socket cleanly
+  if (baileysSocket) {
+    try { baileysSocket.end(undefined); } catch (_) {}
+    baileysSocket = null;
+  }
+
+  const {
+    default: makeWASocket,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+  } = await loadDeps();
+
+  const pino = (await import('pino')).default;
+  const logger = pino({ level: 'silent' });
+
+  // ✅ Use MongoDB-backed auth state — survives redeploys
+  const { state, saveCreds } = await useMongoAuthState();
+
+  const { version } = await fetchLatestBaileysVersion();
+
+  const sock = makeWASocket({
+    version,
+    logger,
+    printQRInTerminal: false,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, logger),
+    },
+    // Reduce memory footprint on free-tier hosts
+    generateHighQualityLinkPreview: false,
+    syncFullHistory: false,
+  });
+
+  baileysSocket = sock;
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      const qrDataUrl = await toQrDataUrl(qr);
+      baileysState = { qr: qrDataUrl, status: 'QR_PENDING', phone: '' };
+      emitEvent('baileys_status', baileysState);
+    }
+
+    if (connection === 'open') {
+      const phone = sock.user?.id?.split(':')[0] || sock.user?.id || '';
+      baileysState = { qr: null, status: 'CONNECTED', phone };
+      emitEvent('baileys_status', baileysState);
+      console.log('[baileys] connected as', phone);
+    }
+
+    if (connection === 'close') {
+      const code = lastDisconnect?.error?.output?.statusCode;
+      const loggedOut = code === DisconnectReason.loggedOut;
+      console.log('[baileys] disconnected, code:', code, 'loggedOut:', loggedOut);
+
+      baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
+      emitEvent('baileys_status', baileysState);
+      baileysSocket = null;
+
+      if (loggedOut) {
+        // Wipe stored credentials from MongoDB
+        await clearMongoAuthState().catch(console.error);
+      } else {
+        // Auto-reconnect after 4 s
+        reconnectTimer = setTimeout(() => connect().catch(console.error), 4000);
+      }
+    }
+  });
+
+  sock.ev.on('creds.update', () => saveCreds().catch(console.error));
+
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return;
+    for (const msg of messages) {
+      if (!msg.key.fromMe) {
+        emitEvent('baileys_incoming_message', normalizeBaileysMessage(msg));
+      }
+    }
+  });
+
+  return sock;
+}
+
+async function disconnect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (baileysSocket) {
+    try { baileysSocket.end(undefined); } catch (_) {}
+    baileysSocket = null;
+  }
+  // Also wipe stored creds so next connect() starts fresh (= new QR)
+  await clearMongoAuthState().catch(console.error);
+  baileysState = { qr: null, status: 'DISCONNECTED', phone: '' };
+  emitEvent('baileys_status', baileysState);
+}
+
+async function sendText({ to, body }) {
+  if (!baileysSocket || baileysState.status !== 'CONNECTED') {
+    throw new Error('Baileys not connected. Scan QR first.');
+  }
+  return baileysSocket.sendMessage(formatJid(to), { text: body });
+}
+
+async function sendImage({ to, imageUrl, caption = '' }) {
+  if (!baileysSocket || baileysState.status !== 'CONNECTED') {
+    throw new Error('Baileys not connected. Scan QR first.');
+  }
+  return baileysSocket.sendMessage(formatJid(to), {
+    image: { url: imageUrl },
+    caption,
+  });
 }
 
 module.exports = { connect, disconnect, sendText, sendImage, getStatus };
