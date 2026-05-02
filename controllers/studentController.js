@@ -124,7 +124,7 @@ async function findDuplicateRegistration(mobile, categoryId, categoryOther) {
 
 // ── WhatsApp confirmation ─────────────────────────────────────────────────────
 
-async function queueStudentConfirmation(student) {
+async function queueStudentConfirmation(student, resolvedCategoryName = '') {
   if (!student.mobile) return;
 
   // Read provider from DB setting — defaults to 'baileys'
@@ -152,7 +152,7 @@ async function queueStudentConfirmation(student) {
     `Your registration for *BK Scholar Awards 2026* has been received successfully.\n\n` +
     `📋 *Details:*\n` +
     `• Name: ${student.fullName}\n` +
-    `• Selected Category: ${student.categoryOther || student.categoryName || 'Selected Category'}\n` +
+    `• Category: ${resolvedCategoryName || student.categoryOther || student.categoryName || '-'}\n` +
     `• School: ${student.schoolName || '-'}\n` +
     `• Percentage: ${percentageDisplay}\n\n` +
     `We will review your details and inform you about eligibility.\n` +
@@ -394,7 +394,7 @@ async function createPublicStudent(req, res) {
     const categoryName = doc.categoryOther || category?.title || category?.name || '';
 
     // Fire-and-forget — WhatsApp runs in background, registration responds instantly
-    queueStudentConfirmation(doc).catch((e) =>
+    queueStudentConfirmation(doc, categoryName).catch((e) =>
       console.error('[createPublicStudent] queueStudentConfirmation error:', e.message)
     );
 
