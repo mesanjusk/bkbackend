@@ -32,3 +32,4 @@ async function seedAdmin() {
 }
 
 module.exports = seedAdmin;
+

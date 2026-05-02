@@ -2,20 +2,22 @@
  * Baileys WhatsApp service
  *
  * Key fixes vs previous version:
- *  1. Pins WA version to [2,3000,1023024415] — avoids fetchLatestBaileysVersion()
- *     timing out on Render and returning a bad version that breaks QR handshake.
+ *  1. Fetches latest WA version dynamically at connect time (8s timeout),
+ *     falls back to a known-good hardcoded version if the fetch fails.
  *  2. Does NOT wrap keys with makeCacheableSignalKeyStore — our MongoDB adapter
  *     already caches in memory; double-wrapping corrupts signal key lookups.
  *  3. Passes auth object directly as { creds, keys } — the correct shape.
  *  4. Adds browser fingerprint so WA treats the session as WhatsApp Web.
+ *  5. Does NOT auto-reconnect on code 405 (version rejected) — avoids
+ *     hammering WA servers with a known-bad version in a tight loop.
  */
 
 const { emitEvent } = require('./socket');
 const { useMongoAuthState, clearMongoAuthState } = require('./baileysAuthState');
 
-// Stable WA Web version — avoids network call to version endpoint on every boot.
-// Update periodically if Baileys starts rejecting connections.
-const WA_VERSION = [2, 3000, 1023024415];
+// Fallback WA Web version — used if fetchLatestBaileysVersion() times out.
+// Update this periodically if 405s start appearing again.
+let WA_VERSION = [2, 3000, 1023027367];
 
 let baileysState  = { qr: null, status: 'DISCONNECTED', phone: '' };
 let baileysSocket = null;
@@ -31,6 +33,32 @@ async function loadMakeWASocket() {
     return mod.default ?? mod.makeWASocket ?? mod;
   } catch {
     throw new Error('Baileys not installed. Run: npm install @whiskeysockets/baileys qrcode pino');
+  }
+}
+
+async function getWAVersion() {
+  try {
+    const mod = await import('@whiskeysockets/baileys');
+    const fetchLatest =
+      mod.fetchLatestBaileysVersion ??
+      mod.default?.fetchLatestBaileysVersion;
+
+    if (!fetchLatest) {
+      console.warn('[baileys] fetchLatestBaileysVersion not found, using fallback version');
+      return;
+    }
+
+    const { version } = await Promise.race([
+      fetchLatest(),
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error('timeout')), 8000)
+      ),
+    ]);
+
+    WA_VERSION = version;
+    console.log('[baileys] WA version fetched:', version.join('.'));
+  } catch (e) {
+    console.warn('[baileys] could not fetch WA version, using fallback', WA_VERSION.join('.'), '—', e.message);
   }
 }
 
@@ -89,6 +117,9 @@ async function connect() {
   killSocket();
 
   try {
+    // Fetch latest WA version before creating the socket (with fallback)
+    await getWAVersion();
+
     const makeWASocket = await loadMakeWASocket();
     const pino = (await import('pino')).default;
 
@@ -161,6 +192,10 @@ async function connect() {
         if (loggedOut) {
           await clearMongoAuthState().catch(console.error);
           console.log('[baileys] logged out — credentials cleared');
+        } else if (code === 405) {
+          // 405 = WA rejected our version — retrying immediately is pointless
+          // and hammers WA servers. Wait for manual reconnect from the UI.
+          console.error('[baileys] WA rejected protocol version (405). Update WA_VERSION fallback or check Baileys for a new release.');
         } else {
           // Back-off reconnect (don't hammer on errors)
           const delay = code === 408 ? 8000 : 5000;
