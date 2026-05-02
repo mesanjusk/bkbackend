@@ -1,96 +1,72 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { getJwtSecret } = require('../controllers/authController');
 
-// ── 30-second in-memory user cache ───────────────────────────────────────────
-// Prevents 120+ MongoDB queries/minute caused by polling (baileys/status every 1s).
-// Cache is per userId, expires after 30s, and is invalidated on 401/403 responses.
-const userCache = new Map();
-
-function getCachedUser(userId) {
-  const entry = userCache.get(userId);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > 30_000) {
-    userCache.delete(userId);
-    return null;
-  }
-  return entry.user;
+function getJwtSecret() {
+  return process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || 'change-me-in-env';
 }
 
-function setCachedUser(userId, user) {
-  userCache.set(userId, { user, ts: Date.now() });
+function canUseBootstrapLogin() {
+  if (process.env.BOOTSTRAP_LOGIN_ENABLED === 'true') return true;
+  if (process.env.NODE_ENV !== 'production' && process.env.BOOTSTRAP_USERNAME && process.env.BOOTSTRAP_PASSWORD) return true;
+  return false;
 }
 
-function invalidateCache(userId) {
-  if (userId) userCache.delete(userId);
+function generateDbToken(id) {
+  return jwt.sign({ id, type: 'db-user' }, getJwtSecret(), { expiresIn: process.env.JWT_EXPIRES_IN || '30d' });
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+function generateBootstrapToken(username) {
+  return jwt.sign(
+    { id: 'hardcoded-super-admin', username, type: 'bootstrap-user', isHardcoded: true, role: 'SUPER_ADMIN' },
+    getJwtSecret(),
+    { expiresIn: process.env.JWT_EXPIRES_IN || '30d' }
+  );
+}
 
-async function protect(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'No token provided' });
-  }
-
+async function login(req, res) {
   try {
-    const token   = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, getJwtSecret());
-
-    // Bootstrap / hardcoded super-admin — no DB lookup needed, never cached
-    if (decoded?.isHardcoded && decoded?.type === 'bootstrap-user') {
-      req.user = {
-        _id: 'hardcoded-super-admin',
-        name: process.env.BOOTSTRAP_NAME || 'Super Admin',
-        username: process.env.BOOTSTRAP_USERNAME || 'bootstrap-admin',
-        mobile: '',
-        email: '',
-        isActive: true,
-        isHardcoded: true,
-        eventDutyType: 'SUPER_ADMIN',
-        availabilityStatus: 'AVAILABLE',
-        stageCounts: { anchorCalls: 0, guestAwards: 0, volunteerAssignments: 0, teamAssignments: 0 },
-        roleId: { _id: 'hardcoded-role-super-admin', name: 'Super Admin', code: 'SUPER_ADMIN', permissions: ['*'] },
-      };
-      return next();
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ message: 'Username and password are required' });
     }
 
-    const userId = decoded.id;
+    const bootstrapUsername = process.env.BOOTSTRAP_USERNAME;
+    const bootstrapPassword = process.env.BOOTSTRAP_PASSWORD;
 
-    // Try cache first — avoids DB hit on every polling request
-    const cached = getCachedUser(userId);
-    if (cached) {
-      req.user = cached;
-      return next();
+    if (canUseBootstrapLogin() && bootstrapUsername && bootstrapPassword && username === bootstrapUsername && password === bootstrapPassword) {
+      return res.json({
+        token: generateBootstrapToken(bootstrapUsername),
+        user: {
+          _id: 'hardcoded-super-admin',
+          name: process.env.BOOTSTRAP_NAME || 'Super Admin',
+          username: bootstrapUsername,
+          mobile: '',
+          email: '',
+          isActive: true,
+          isHardcoded: true,
+          eventDutyType: 'SUPER_ADMIN',
+          availabilityStatus: 'AVAILABLE',
+          stageCounts: { anchorCalls: 0, guestAwards: 0, volunteerAssignments: 0, teamAssignments: 0 },
+          roleId: { _id: 'hardcoded-role-super-admin', name: 'Super Admin', code: 'SUPER_ADMIN', permissions: ['*'] }
+        }
+      });
     }
 
-    // Cache miss — hit DB and store result
-    const user = await User.findById(userId).populate('roleId');
-    if (!user) {
-      invalidateCache(userId);
-      return res.status(401).json({ message: 'Invalid token user' });
-    }
-    if (!user.isActive) {
-      invalidateCache(userId);
-      return res.status(403).json({ message: 'User account is inactive' });
-    }
+    const user = await User.findOne({ username }).populate('roleId');
+    if (!user) return res.status(401).json({ message: 'Invalid username or password' });
+    if (!user.isActive) return res.status(403).json({ message: 'User account is inactive' });
 
-    setCachedUser(userId, user);
-    req.user = user;
-    return next();
+    const ok = await user.matchPassword(password);
+    if (!ok) return res.status(401).json({ message: 'Invalid username or password' });
 
+    return res.json({ token: generateDbToken(user._id), user });
   } catch (error) {
-    return res.status(401).json({ message: 'Invalid token' });
+    return res.status(500).json({ message: error.message || 'Login failed' });
   }
 }
 
-function permit(permission) {
-  return (req, res, next) => {
-    const permissions = req.user?.roleId?.permissions || [];
-    if (permissions.includes('*')) return next();
-    if (!permissions.includes(permission)) return res.status(403).json({ message: 'Permission denied' });
-    return next();
-  };
+async function me(req, res) {
+  return res.json(req.user);
 }
 
-module.exports = { protect, permit, invalidateCache };
+module.exports = { login, me, getJwtSecret };
