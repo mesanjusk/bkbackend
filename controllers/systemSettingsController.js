@@ -1,13 +1,13 @@
 const SystemSetting = require('../models/SystemSetting');
 
-// Default settings seeded on first access
+// Default settings — baileys is the default provider
 const DEFAULTS = [
   {
     key: 'registration_whatsapp_provider',
-    value: 'official',
+    value: 'baileys',
     label: 'Registration WhatsApp Provider',
     description:
-      'Controls which WhatsApp provider is used when sending auto confirmation messages on student registration. "official" uses Meta Cloud API; "baileys" uses the Baileys (WhatsApp Web) connection.',
+      'Controls which WhatsApp provider sends the auto-confirmation on student registration. "baileys" uses WhatsApp Web (QR-based); "official" uses Meta Cloud API.',
   },
 ];
 
@@ -25,7 +25,6 @@ async function getSettings(req, res) {
   try {
     await ensureDefaults();
     const settings = await SystemSetting.find().sort({ key: 1 }).lean();
-    // Return as a key→value map for easy consumption + raw array
     const map = {};
     for (const s of settings) map[s.key] = s.value;
     res.json({ settings, map });
@@ -40,7 +39,6 @@ async function updateSetting(req, res) {
     const { key } = req.params;
     const { value } = req.body;
     if (value === undefined) return res.status(400).json({ message: 'value is required' });
-
     const updated = await SystemSetting.findOneAndUpdate(
       { key },
       { $set: { value } },
@@ -55,7 +53,6 @@ async function updateSetting(req, res) {
 
 async function updateSettings(req, res) {
   try {
-    // Body: { registration_whatsapp_provider: 'baileys', ... }
     const updates = req.body;
     const results = [];
     for (const [key, value] of Object.entries(updates)) {
@@ -73,8 +70,8 @@ async function updateSettings(req, res) {
   }
 }
 
-// Helper used by other controllers (e.g. studentController)
-async function getSettingValue(key, fallback = null) {
+// Helper used by studentController — falls back to 'baileys' if not set
+async function getSettingValue(key, fallback = 'baileys') {
   try {
     const doc = await SystemSetting.findOne({ key }).lean();
     return doc ? doc.value : fallback;
