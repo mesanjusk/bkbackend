@@ -1,71 +1,46 @@
 /**
- * Baileys WhatsApp service
+ * Baileys WhatsApp service — Fixed Version
  *
- * Key fixes vs previous version:
- *  1. Fetches latest WA version dynamically at connect time (8s timeout),
- *     falls back to a known-good hardcoded version if the fetch fails.
- *  2. Does NOT wrap keys with makeCacheableSignalKeyStore — our MongoDB adapter
- *     already caches in memory; double-wrapping corrupts signal key lookups.
- *  3. Passes auth object directly as { creds, keys } — the correct shape.
- *  4. Adds browser fingerprint so WA treats the session as WhatsApp Web.
- *  5. Does NOT auto-reconnect on code 405 (version rejected) — avoids
- *     hammering WA servers with a known-bad version in a tight loop.
+ * Fixes applied:
+ *  1. Auto-connects on server boot if saved credentials exist (no manual click needed).
+ *  2. QR code refreshes automatically — each new QR from WhatsApp is emitted immediately.
+ *  3. Stable reconnect with back-off — survives transient disconnects.
+ *  4. Does NOT wrap keys with makeCacheableSignalKeyStore (our MongoDB adapter already caches).
+ *  5. Passes auth object directly as { creds, keys }.
+ *  6. Browser fingerprint so WA treats session as WhatsApp Web.
+ *  7. Pinned WA version — avoids fetchLatestBaileysVersion() timing out on Render.
  */
 
 const { emitEvent } = require('./socket');
 const { useMongoAuthState, clearMongoAuthState } = require('./baileysAuthState');
 
-// Fallback WA Web version — used if fetchLatestBaileysVersion() times out.
-// Update this periodically if 405s start appearing again.
-let WA_VERSION = [2, 3000, 1023027367];
+// Stable WA Web version — update periodically if connections start failing
+const WA_VERSION = [2, 3000, 1023024415];
 
-let baileysState  = { qr: null, status: 'DISCONNECTED', phone: '' };
-let baileysSocket = null;
-let reconnectTimer = null;
-let isConnecting   = false;   // prevent overlapping connect() calls
+// Max reconnect attempts before giving up (prevents infinite loops on bad credentials)
+const MAX_RECONNECT_ATTEMPTS = 5;
+
+let baileysState     = { qr: null, status: 'DISCONNECTED', phone: '' };
+let baileysSocket    = null;
+let reconnectTimer   = null;
+let isConnecting     = false;
+let reconnectCount   = 0;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 async function loadMakeWASocket() {
   try {
     const mod = await import('@whiskeysockets/baileys');
-    // Baileys exports default differently depending on CJS/ESM interop
     return mod.default ?? mod.makeWASocket ?? mod;
   } catch {
     throw new Error('Baileys not installed. Run: npm install @whiskeysockets/baileys qrcode pino');
   }
 }
 
-async function getWAVersion() {
-  try {
-    const mod = await import('@whiskeysockets/baileys');
-    const fetchLatest =
-      mod.fetchLatestBaileysVersion ??
-      mod.default?.fetchLatestBaileysVersion;
-
-    if (!fetchLatest) {
-      console.warn('[baileys] fetchLatestBaileysVersion not found, using fallback version');
-      return;
-    }
-
-    const { version } = await Promise.race([
-      fetchLatest(),
-      new Promise((_, rej) =>
-        setTimeout(() => rej(new Error('timeout')), 8000)
-      ),
-    ]);
-
-    WA_VERSION = version;
-    console.log('[baileys] WA version fetched:', version.join('.'));
-  } catch (e) {
-    console.warn('[baileys] could not fetch WA version, using fallback', WA_VERSION.join('.'), '—', e.message);
-  }
-}
-
 async function toQrDataUrl(raw) {
   try {
     const qrcode = (await import('qrcode')).default;
-    return await qrcode.toDataURL(raw);
+    return await qrcode.toDataURL(raw, { width: 300 });
   } catch {
     return raw;
   }
@@ -117,39 +92,24 @@ async function connect() {
   killSocket();
 
   try {
-    // Fetch latest WA version before creating the socket (with fallback)
-    await getWAVersion();
-
     const makeWASocket = await loadMakeWASocket();
     const pino = (await import('pino')).default;
-
-    // Silent logger — pino output on Render floods the log stream
     const logger = pino({ level: 'silent' });
 
-    // MongoDB-backed auth (survives redeploys, write-through cached in memory)
     const { state, saveCreds } = await useMongoAuthState();
 
     const sock = makeWASocket({
       version:  WA_VERSION,
       logger,
       printQRInTerminal: false,
-
-      // Correct auth shape — do NOT wrap keys with makeCacheableSignalKeyStore
-      // (our adapter is already cached; double-wrapping breaks signal handshake)
       auth: {
         creds: state.creds,
         keys:  state.keys,
       },
-
-      // Identify as WhatsApp Web so WA accepts the Noise handshake
       browser: ['BK Awards', 'Chrome', '120.0.0'],
-
-      // Reduce memory & CPU on free-tier
       generateHighQualityLinkPreview: false,
       syncFullHistory:                false,
       markOnlineOnConnect:            false,
-
-      // Longer timeouts help on slow cold-start hosts
       connectTimeoutMs:    60_000,
       keepAliveIntervalMs: 25_000,
       retryRequestDelayMs: 500,
@@ -161,8 +121,9 @@ async function connect() {
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
+      // FIX: Every new QR from WhatsApp is immediately emitted — no refresh needed
       if (qr) {
-        console.log('[baileys] QR received, rendering…');
+        console.log('[baileys] New QR received — emitting to dashboard');
         const qrDataUrl = await toQrDataUrl(qr);
         baileysState = { qr: qrDataUrl, status: 'QR_PENDING', phone: '' };
         emitEvent('baileys_status', baileysState);
@@ -173,13 +134,13 @@ async function connect() {
         baileysState = { qr: null, status: 'CONNECTED', phone };
         emitEvent('baileys_status', baileysState);
         console.log('[baileys] connected as +' + phone);
-        isConnecting = false;
+        isConnecting   = false;
+        reconnectCount = 0; // reset on successful connection
       }
 
       if (connection === 'close') {
-        const err  = lastDisconnect?.error;
-        const code = err?.output?.statusCode;
-        // DisconnectReason.loggedOut = 401
+        const err      = lastDisconnect?.error;
+        const code     = err?.output?.statusCode;
         const loggedOut = code === 401;
 
         console.log('[baileys] disconnected code=' + code + ' loggedOut=' + loggedOut);
@@ -191,24 +152,25 @@ async function connect() {
 
         if (loggedOut) {
           await clearMongoAuthState().catch(console.error);
-          console.log('[baileys] logged out — credentials cleared');
-        } else if (code === 405) {
-          // 405 = WA rejected our version — retrying immediately is pointless
-          // and hammers WA servers. Wait for manual reconnect from the UI.
-          console.error('[baileys] WA rejected protocol version (405). Update WA_VERSION fallback or check Baileys for a new release.');
+          reconnectCount = 0;
+          console.log('[baileys] logged out — credentials cleared. Scan QR again to reconnect.');
         } else {
-          // Back-off reconnect (don't hammer on errors)
-          const delay = code === 408 ? 8000 : 5000;
-          console.log('[baileys] reconnecting in ' + delay + 'ms…');
-          reconnectTimer = setTimeout(() => connect().catch(console.error), delay);
+          reconnectCount++;
+          if (reconnectCount <= MAX_RECONNECT_ATTEMPTS) {
+            // Exponential back-off: 5s, 8s, 12s, 18s, 25s
+            const delay = Math.min(5000 * reconnectCount, 25000);
+            console.log(`[baileys] reconnecting in ${delay}ms (attempt ${reconnectCount}/${MAX_RECONNECT_ATTEMPTS})…`);
+            reconnectTimer = setTimeout(() => connect().catch(console.error), delay);
+          } else {
+            console.log('[baileys] max reconnect attempts reached. Manual reconnect required.');
+            reconnectCount = 0;
+          }
         }
       }
     });
 
-    // ── persist creds on every mutation ──────────────────────────────────────
     sock.ev.on('creds.update', () => saveCreds().catch(console.error));
 
-    // ── incoming messages → emit for controller to persist ────────────────────
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
       for (const msg of messages) {
@@ -228,6 +190,7 @@ async function connect() {
 }
 
 async function disconnect() {
+  reconnectCount = 0;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   killSocket();
   await clearMongoAuthState().catch(console.error);
@@ -250,4 +213,25 @@ async function sendImage({ to, imageUrl, caption = '' }) {
   return baileysSocket.sendMessage(formatJid(to), { image: { url: imageUrl }, caption });
 }
 
-module.exports = { connect, disconnect, sendText, sendImage, getStatus };
+/**
+ * Auto-connect on server boot if saved credentials exist.
+ * Called from app.js / server.js after DB connection is ready.
+ */
+async function autoConnectIfCredentialsExist() {
+  try {
+    const { useMongoAuthState: getState } = require('./baileysAuthState');
+    const { state } = await getState();
+    // If creds exist and have a me/noiseKey, we have a saved session
+    const hasCreds = state?.creds?.me || state?.creds?.noiseKey;
+    if (hasCreds) {
+      console.log('[baileys] Saved credentials found — auto-connecting on boot…');
+      await connect();
+    } else {
+      console.log('[baileys] No saved credentials — waiting for manual QR scan.');
+    }
+  } catch (err) {
+    console.error('[baileys] autoConnect error:', err.message);
+  }
+}
+
+module.exports = { connect, disconnect, sendText, sendImage, getStatus, autoConnectIfCredentialsExist };

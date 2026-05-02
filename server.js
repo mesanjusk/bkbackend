@@ -57,13 +57,14 @@ app.use('/api/whatsapp',            require('./routes/whatsappRoutes'));
 app.use('/api/baileys',             require('./routes/baileysRoutes'));
 app.use('/api/uploads',             require('./routes/uploadRoutes'));
 app.use('/api/volunteers',          require('./routes/volunteerRoutes'));
-app.use('/api/system-settings',     require('./routes/systemSettingsRoutes'));   // ← NEW
+app.use('/api/system-settings',     require('./routes/systemSettingsRoutes'));
 
 
 async function startServer() {
   try {
     await connectDB();
     await seedAdmin();
+
     const server = http.createServer(app);
 
     const io = new Server(server, {
@@ -83,7 +84,19 @@ async function startServer() {
     });
 
     const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+    server.listen(PORT, () => {
+      console.log(`Server running on ${PORT}`);
+
+      // ── Baileys auto-connect ──────────────────────────────────────────────
+      // If saved WhatsApp credentials exist in MongoDB, reconnect automatically
+      // on every server boot — no manual QR scan needed after a restart.
+      const { autoConnectIfCredentialsExist } = require('./services/baileysService');
+      autoConnectIfCredentialsExist().catch((err) =>
+        console.error('[baileys] Auto-connect failed on boot:', err.message)
+      );
+      // ─────────────────────────────────────────────────────────────────────
+    });
+
   } catch (err) {
     console.error('Failed to start server:', err.message);
     process.exit(1);

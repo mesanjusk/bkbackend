@@ -10,20 +10,20 @@ const { sendTemplateMessage } = require('../services/whatsappService');
 const baileysService = require('../services/baileysService');
 const { getSettingValue } = require('./systemSettingsController');
 
+// ── Board helpers ─────────────────────────────────────────────────────────────
+
 function getBoardFromCategory(category) {
   if (!category) return '';
   if (category.board) return category.board;
-
   const title = String(category.title || '').toUpperCase();
   if (title.includes('CBSE')) return 'CBSE';
   if (title.includes('STATE')) return 'STATE BOARD';
-
   return '';
 }
 
 function buildFullName(body = {}) {
   return [body.firstName, body.lastName]
-    .map((value) => String(value || '').trim())
+    .map((v) => String(v || '').trim())
     .filter(Boolean)
     .join(' ')
     .trim();
@@ -50,16 +50,16 @@ function normalizeStudentPayload(body, board = '') {
 
   const payload = {
     ...body,
-    firstName: String(body.firstName || '').trim(),
-    lastName: String(body.lastName || '').trim(),
-    fatherName: String(body.fatherName || '').trim(),
-    fullName: computedFullName,
+    firstName:      String(body.firstName  || '').trim(),
+    lastName:       String(body.lastName   || '').trim(),
+    fatherName:     String(body.fatherName || '').trim(),
+    fullName:       computedFullName,
     board,
     resultImageUrl: body.resultImageUrl || body.marksheetFileUrl || ''
   };
 
   if (payload.categoryId === 'OTHER' || payload.categoryId === '') {
-    payload.categoryId = null;
+    payload.categoryId    = null;
     payload.categoryOther = String(payload.categoryOther || 'OTHER').trim();
   } else if (payload.categoryId) {
     if (!mongoose.Types.ObjectId.isValid(payload.categoryId)) {
@@ -72,7 +72,7 @@ function normalizeStudentPayload(body, board = '') {
   }
 
   if (!payload.categoryOther) payload.categoryOther = '';
-  if (!payload.gender) payload.gender = '';
+  if (!payload.gender)        payload.gender        = '';
 
   if (payload.studentPhotoUrl && !payload.certificatePhotoUrl) {
     payload.certificatePhotoUrl = payload.studentPhotoUrl;
@@ -82,23 +82,48 @@ function normalizeStudentPayload(body, board = '') {
 }
 
 // ── Phone helpers ─────────────────────────────────────────────────────────────
+
 function normalizePhone(raw) {
   return String(raw || '').replace(/[^\d]/g, '').trim();
 }
 
-// Baileys needs a full international number (with country code).
-// Indian numbers are 10 digits — prepend 91. Adjust prefix for other countries.
+// Baileys needs the full international number (with country code).
+// Indian numbers: 10 digits → prepend 91.
 function toWhatsAppNumber(raw) {
   const digits = normalizePhone(raw);
   if (!digits) return '';
-  // Already has country code (11+ digits starting with 91, or 12+ digits)
-  if (digits.length >= 11) return digits;
-  // 10-digit Indian mobile — add 91
+  if (digits.length >= 11) return digits;   // already has country code
   if (digits.length === 10) return `91${digits}`;
   return digits;
 }
 
-// ── WhatsApp confirmation on registration ────────────────────────────────────
+// ── Duplicate registration check ──────────────────────────────────────────────
+
+/**
+ * Returns an existing student if the same mobile + same category already exists.
+ * Handles both ObjectId categoryId and free-text categoryOther.
+ */
+async function findDuplicateRegistration(mobile, categoryId, categoryOther) {
+  const normalizedMobile = normalizePhone(mobile);
+  if (!normalizedMobile) return null;
+
+  const query = { mobile: { $in: [normalizedMobile, `91${normalizedMobile}`, normalizedMobile.replace(/^91/, '')] } };
+
+  if (categoryId && categoryId !== 'OTHER' && mongoose.Types.ObjectId.isValid(categoryId)) {
+    query.categoryId = categoryId;
+  } else if (categoryOther) {
+    query.categoryId    = null;
+    query.categoryOther = { $regex: new RegExp(`^${categoryOther.trim()}$`, 'i') };
+  } else {
+    // No category info — can't reliably check duplicate
+    return null;
+  }
+
+  return Student.findOne(query).lean();
+}
+
+// ── WhatsApp confirmation ─────────────────────────────────────────────────────
+
 async function queueStudentConfirmation(student) {
   if (!student.mobile) return;
 
@@ -107,72 +132,87 @@ async function queueStudentConfirmation(student) {
   try {
     provider = await getSettingValue('registration_whatsapp_provider', 'baileys');
   } catch (e) {
-    console.error('queueStudentConfirmation: could not read provider setting, using baileys', e.message);
+    console.error('[queueStudentConfirmation] Could not read provider setting, defaulting to baileys:', e.message);
   }
 
-  const useBaileys = provider === 'baileys';
-  const editToken = student.publicEditToken;
-
-  // Use full international number for Baileys
+  const useBaileys       = provider !== 'official';
+  const editToken        = student.publicEditToken;
   const mobileForBaileys = toWhatsAppNumber(student.mobile);
 
-  const confirmationText =
-    `Hello ${student.fullName}, ` +
-    `Your registration for BK Scholar Awards 2026 has been received successfully ✅ ` +
-    `We will review your details and check your eligibility for the selected category. ` +
-    `Please stay connected with us on WhatsApp for further updates 📲`;
+  const frontendUrl   = process.env.FRONTEND_URL || 'https://bkawards.instify.in';
+  const editLink      = editToken ? `${frontendUrl}/register/edit/${editToken}` : '';
+  const registrationId = editToken
+    ? editToken.slice(-8).toUpperCase()
+    : String(student._id).slice(-8).toUpperCase();
 
-  console.log(`[queueStudentConfirmation] provider=${provider} mobile=${student.mobile} mobileForBaileys=${mobileForBaileys}`);
+  const confirmationText =
+    `✅ *Registration Confirmed!*\n\n` +
+    `Hello *${student.fullName}*,\n` +
+    `Your registration for *BK Scholar Awards 2026* has been received successfully.\n\n` +
+    `📋 *Details:*\n` +
+    `• Name: ${student.fullName}\n` +
+    `• Category: ${student.categoryOther || student.categoryName || 'Selected Category'}\n` +
+    `• School: ${student.schoolName || '-'}\n` +
+    `• Registration ID: ${registrationId}\n\n` +
+    (editLink ? `📝 *Edit your registration:*\n${editLink}\n\n` : '') +
+    `We will review your details and inform you about eligibility.\n` +
+    `Stay connected on WhatsApp 📲\n\n` +
+    `— BK Scholar Awards Team`;
+
+  console.log(
+    `[queueStudentConfirmation] provider=${provider} mobile=${student.mobile} wa=${mobileForBaileys}`
+  );
 
   try {
     if (useBaileys) {
-      // ── Baileys (WhatsApp Web) ──────────────────────────────────────────
+      // ── Baileys (WhatsApp Web) ────────────────────────────────────────────
+      const baileysStatus = baileysService.getStatus();
+      if (baileysStatus.status !== 'CONNECTED') {
+        throw new Error(`Baileys not connected (status: ${baileysStatus.status})`);
+      }
+
       await baileysService.sendText({ to: mobileForBaileys, body: confirmationText });
 
       await BaileysMessage.create({
-        to: mobileForBaileys,
-        from: '',
-        contactName: student.fullName,
+        to:              mobileForBaileys,
+        from:            '',
+        contactName:     student.fullName,
         conversationKey: mobileForBaileys,
-        direction: 'OUTGOING',
-        source: 'AUTO',
-        messageType: 'TEXT',
-        bodyText: confirmationText,
-        status: 'SENT',
-        meta: { trigger: 'registration_confirmation', provider: 'baileys' }
+        direction:       'OUTGOING',
+        source:          'AUTO',
+        messageType:     'TEXT',
+        bodyText:        confirmationText,
+        status:          'SENT',
+        meta:            { trigger: 'registration_confirmation', provider: 'baileys' }
       }).catch(() => null);
 
     } else {
-      // ── Official Meta Cloud API ─────────────────────────────────────────
+      // ── Official Meta Cloud API ───────────────────────────────────────────
       await sendTemplateMessage({
-        to: student.mobile,
-        templateName: 'bk_award',
-        languageCode: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+        to:             student.mobile,
+        templateName:   'bk_award',
+        languageCode:   process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
         bodyParameters: [student.fullName],
-        buttonParameters: [
-          {
-            sub_type: 'url',
-            index: 0,
-            parameters: [{ type: 'text', text: editToken }]
-          }
-        ]
+        buttonParameters: editToken ? [
+          { sub_type: 'url', index: 0, parameters: [{ type: 'text', text: editToken }] }
+        ] : []
       });
 
       await WhatsAppMessage.create({
-        to: student.mobile,
-        templateName: 'bk_award',
-        messageType: 'TEMPLATE',
-        status: 'SENT',
+        to:               student.mobile,
+        templateName:     'bk_award',
+        messageType:      'TEMPLATE',
+        status:           'SENT',
         relatedEntityType: 'Student',
-        relatedEntityId: String(student._id),
-        bodyText: confirmationText
+        relatedEntityId:  String(student._id),
+        bodyText:         confirmationText
       }).catch(() => null);
     }
 
     await Notification.create({
-      title: 'Student confirmation sent',
-      message: `Registration confirmation sent for ${student.fullName} via ${useBaileys ? 'Baileys' : 'Official API'}`,
-      type: 'WHATSAPP',
+      title:       'Student confirmation sent',
+      message:     `Registration confirmation sent for ${student.fullName} via ${useBaileys ? 'Baileys' : 'Official API'}`,
+      type:        'WHATSAPP',
       targetRoles: ['ADMIN', 'SENIOR_TEAM']
     }).catch(() => null);
 
@@ -182,45 +222,81 @@ async function queueStudentConfirmation(student) {
     emitEvent('whatsapp_message_logged', { to: student.mobile, studentId: student._id });
 
   } catch (error) {
-    console.error('queueStudentConfirmation error:', error?.response?.data || error.message || error);
+    console.error('[queueStudentConfirmation] error:', error?.response?.data || error.message);
+
+    // ── Fallback: if Baileys was primary but failed, try Official API ─────
+    if (useBaileys) {
+      console.log('[queueStudentConfirmation] Baileys failed — attempting Official API fallback…');
+      try {
+        await sendTemplateMessage({
+          to:             student.mobile,
+          templateName:   'bk_award',
+          languageCode:   process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+          bodyParameters: [student.fullName],
+          buttonParameters: editToken ? [
+            { sub_type: 'url', index: 0, parameters: [{ type: 'text', text: editToken }] }
+          ] : []
+        });
+
+        await WhatsAppMessage.create({
+          to:               student.mobile,
+          templateName:     'bk_award',
+          messageType:      'TEMPLATE',
+          status:           'SENT',
+          relatedEntityType: 'Student',
+          relatedEntityId:  String(student._id),
+          bodyText:         confirmationText
+        }).catch(() => null);
+
+        console.log('[queueStudentConfirmation] Official API fallback succeeded');
+
+        student.whatsappConfirmationSentAt = new Date();
+        await student.save();
+        emitEvent('whatsapp_message_logged', { to: student.mobile, studentId: student._id });
+        return; // fallback worked — skip failure logging below
+      } catch (fallbackErr) {
+        console.error('[queueStudentConfirmation] Official API fallback also failed:', fallbackErr.message);
+      }
+    }
 
     // Log failure
     if (useBaileys) {
       await BaileysMessage.create({
-        to: mobileForBaileys,
-        contactName: student.fullName,
+        to:              mobileForBaileys,
+        contactName:     student.fullName,
         conversationKey: mobileForBaileys,
-        direction: 'OUTGOING',
-        source: 'AUTO',
-        messageType: 'TEXT',
-        bodyText: confirmationText,
-        status: 'FAILED',
-        meta: { trigger: 'registration_confirmation', provider: 'baileys', error: error.message }
+        direction:       'OUTGOING',
+        source:          'AUTO',
+        messageType:     'TEXT',
+        bodyText:        confirmationText,
+        status:          'FAILED',
+        meta:            { trigger: 'registration_confirmation', provider: 'baileys', error: error.message }
       }).catch(() => null);
     } else {
       await WhatsAppMessage.create({
-        to: student.mobile,
-        templateName: 'bk_award',
-        messageType: 'TEMPLATE',
-        status: 'FAILED',
+        to:               student.mobile,
+        templateName:     'bk_award',
+        messageType:      'TEMPLATE',
+        status:           'FAILED',
         relatedEntityType: 'Student',
-        relatedEntityId: String(student._id),
-        bodyText: `Failed to send registration confirmation to ${student.fullName}`
+        relatedEntityId:  String(student._id),
+        bodyText:         `Failed to send registration confirmation to ${student.fullName}`
       }).catch(() => null);
     }
 
     await Notification.create({
-      title: 'Student confirmation failed',
-      message: `Registration confirmation failed for ${student.fullName}`,
-      type: 'WHATSAPP',
+      title:       'Student confirmation failed',
+      message:     `Registration confirmation failed for ${student.fullName}`,
+      type:        'WHATSAPP',
       targetRoles: ['ADMIN', 'SENIOR_TEAM']
     }).catch(() => null);
 
-    // Don't re-throw — registration itself succeeded, don't fail it over WhatsApp
+    // Don't re-throw — registration itself succeeded, never fail it over WhatsApp
   }
 }
 
-// ── Public categories ────────────────────────────────────────────────────────
+// ── Public categories ─────────────────────────────────────────────────────────
+
 async function getPublicCategories(req, res) {
   try {
     const docs = await Category.find({
@@ -243,6 +319,7 @@ async function getPublicCategories(req, res) {
 }
 
 // ── Students CRUD ─────────────────────────────────────────────────────────────
+
 async function getStudents(req, res) {
   try {
     const docs = await Student.find()
@@ -265,7 +342,7 @@ async function createStudent(req, res) {
       category = await Category.findById(req.body.categoryId);
     }
 
-    const board = getBoardFromCategory(category);
+    const board   = getBoardFromCategory(category);
     const payload = normalizeStudentPayload(req.body, board);
 
     const doc = await Student.create(payload);
@@ -278,6 +355,8 @@ async function createStudent(req, res) {
   }
 }
 
+// ── Public registration (with duplicate check) ────────────────────────────────
+
 async function createPublicStudent(req, res) {
   try {
     let category = null;
@@ -286,19 +365,51 @@ async function createPublicStudent(req, res) {
       category = await Category.findById(req.body.categoryId);
     }
 
-    const board = getBoardFromCategory(category);
+    // ── Duplicate check: same mobile + same category ──────────────────────
+    const duplicate = await findDuplicateRegistration(
+      req.body.mobile,
+      req.body.categoryId,
+      req.body.categoryOther
+    );
+
+    if (duplicate) {
+      return res.status(409).json({
+        duplicate:  true,
+        editToken:  duplicate.publicEditToken || null,
+        studentId:  String(duplicate._id),
+        message:
+          `A registration already exists for this mobile number and category. ` +
+          `${duplicate.publicEditToken
+            ? 'You can edit your existing registration using the link below.'
+            : 'Please contact us if you need to make changes.'}`
+      });
+    }
+
+    // ── Create new student ────────────────────────────────────────────────
+    const board   = getBoardFromCategory(category);
     const payload = normalizeStudentPayload(req.body, board);
+    const doc     = await Student.create(payload);
 
-    const doc = await Student.create(payload);
+    // Build category display name for confirmation card
+    const categoryName = doc.categoryOther || category?.title || category?.name || '';
 
-    // Fire-and-forget — don't await so registration response is instant
+    // Fire-and-forget — WhatsApp runs in background, registration responds instantly
     queueStudentConfirmation(doc).catch((e) =>
-      console.error('queueStudentConfirmation background error:', e.message)
+      console.error('[createPublicStudent] queueStudentConfirmation error:', e.message)
     );
 
     emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
 
-    res.status(201).json({ message: 'Registration submitted successfully' });
+    // Return editToken + studentId so frontend can render confirmation card
+    res.status(201).json({
+      message:      'Registration submitted successfully',
+      editToken:    doc.publicEditToken || null,
+      studentId:    String(doc._id),
+      studentName:  doc.fullName,
+      categoryName,
+      mobile:       normalizePhone(doc.mobile)
+    });
+
   } catch (error) {
     console.error('createPublicStudent error:', error);
     res.status(error.statusCode || 500).json({
@@ -306,6 +417,8 @@ async function createPublicStudent(req, res) {
     });
   }
 }
+
+// ── Public edit by token ──────────────────────────────────────────────────────
 
 async function getPublicStudentByToken(req, res) {
   try {
@@ -333,7 +446,7 @@ async function updatePublicStudentByToken(req, res) {
       category = existing?.categoryId || null;
     }
 
-    const board = getBoardFromCategory(category);
+    const board   = getBoardFromCategory(category);
     const payload = normalizeStudentPayload(req.body, board);
 
     const doc = await Student.findOneAndUpdate(
@@ -355,6 +468,8 @@ async function updatePublicStudentByToken(req, res) {
   }
 }
 
+// ── Admin student update ──────────────────────────────────────────────────────
+
 async function updateStudent(req, res) {
   try {
     let category = null;
@@ -366,7 +481,7 @@ async function updateStudent(req, res) {
       category = existing?.categoryId || null;
     }
 
-    const board = getBoardFromCategory(category);
+    const board   = getBoardFromCategory(category);
     const payload = normalizeStudentPayload(req.body, board);
 
     const doc = await Student.findByIdAndUpdate(req.params.id, payload, {
@@ -384,6 +499,8 @@ async function updateStudent(req, res) {
     res.status(error.statusCode || 500).json({ message: error.message || 'Failed to update student' });
   }
 }
+
+// ── Parse & evaluate ──────────────────────────────────────────────────────────
 
 async function parseStudent(req, res) {
   try {
@@ -422,10 +539,10 @@ async function evaluateStudent(req, res) {
     if (!student) return res.status(404).json({ message: 'Student not found' });
 
     const categories = await Category.find({ isActive: true });
-    const matched = categories.filter((cat) => doesMatch(student, cat));
+    const matched    = categories.filter((cat) => doesMatch(student, cat));
 
     student.matchedCategoryIds = matched.map((x) => x._id);
-    student.status = matched.length ? 'Eligible' : 'Review Needed';
+    student.status             = matched.length ? 'Eligible' : 'Review Needed';
     await student.save();
 
     const updated = await Student.findById(student._id)
@@ -433,9 +550,9 @@ async function evaluateStudent(req, res) {
       .populate('categoryId');
 
     emitEvent('student_eligible', {
-      studentId: updated._id,
+      studentId:    updated._id,
       matchedCount: matched.length,
-      status: updated.status
+      status:       updated.status
     });
 
     res.json(updated);
