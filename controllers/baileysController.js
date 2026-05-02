@@ -10,7 +10,7 @@ function getConversationKey(phone) {
   return normalizePhone(phone);
 }
 
-// ── Status & QR ──────────────────────────────────────────────────────────────
+// ── Status & QR ───────────────────────────────────────────────────────────────
 
 async function getStatus(req, res) {
   res.json(baileysService.getStatus());
@@ -87,7 +87,7 @@ async function markConversationRead(req, res) {
   res.json({ message: 'Marked as read' });
 }
 
-// ── Send ──────────────────────────────────────────────────────────────────────
+// ── Send Text ──────────────────────────────────────────────────────────────────
 
 async function sendText(req, res) {
   const { to, text, contactName = '', replyToMessageId = '' } = req.body;
@@ -127,10 +127,107 @@ async function sendText(req, res) {
   }
 }
 
+// ── Logs (flat list of all messages) ─────────────────────────────────────────
+
+async function getLogs(req, res) {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    const logs = await BaileysMessage.find({})
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(logs);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+// ── Send Invitation (image blast) ─────────────────────────────────────────────
+
+async function sendInvitation(req, res) {
+  const {
+    imageUrl,
+    eventName,
+    date,
+    time,
+    venue,
+    textPosition = 'bottom',
+    recipients = [],
+  } = req.body;
+
+  const missingFields = [];
+  if (!imageUrl) missingFields.push('imageUrl');
+  if (!eventName) missingFields.push('eventName');
+  if (!date) missingFields.push('date');
+  if (!time) missingFields.push('time');
+  if (!venue) missingFields.push('venue');
+  if (!recipients.length) missingFields.push('recipients');
+
+  if (missingFields.length) {
+    return res.status(400).json({ message: 'Missing required fields', missingFields });
+  }
+
+  let success = 0;
+  let failed = 0;
+  const errors = [];
+
+  const caption = `🎉 *${eventName}*\n📅 ${date}  🕐 ${time}\n📍 ${venue}`;
+
+  for (const recipient of recipients) {
+    const phone = normalizePhone(recipient.mobile || recipient.phone || '');
+    if (!phone) { failed++; continue; }
+
+    try {
+      // Send image with caption via Baileys
+      await baileysService.sendImage({ to: phone, imageUrl, caption });
+
+      await BaileysMessage.create({
+        to: phone,
+        from: '',
+        contactName: recipient.name || '',
+        conversationKey: getConversationKey(phone),
+        direction: 'OUTGOING',
+        source: 'INVITATION',
+        messageType: 'IMAGE',
+        bodyText: caption,
+        status: 'SENT',
+        meta: { eventName, date, time, venue, imageUrl, textPosition },
+      });
+
+      success++;
+    } catch (err) {
+      failed++;
+      errors.push({ phone, error: err.message });
+
+      await BaileysMessage.create({
+        to: phone,
+        contactName: recipient.name || '',
+        conversationKey: getConversationKey(phone),
+        direction: 'OUTGOING',
+        source: 'INVITATION',
+        messageType: 'IMAGE',
+        bodyText: caption,
+        status: 'FAILED',
+        meta: { error: err.message },
+      }).catch(() => null);
+    }
+  }
+
+  res.json({
+    message: `Invitation sent: ${success} success, ${failed} failed`,
+    total: recipients.length,
+    success,
+    failed,
+    errors,
+  });
+}
+
 // ── Incoming (called from baileysService event) ───────────────────────────────
 
 async function saveIncomingMessage({ id, from, body, type, raw }) {
-  const existing = id ? await BaileysMessage.findOne({ baileysMessageId: id }) : null;
+  const existing = id
+    ? await BaileysMessage.findOne({ baileysMessageId: id })
+    : null;
   if (existing) return existing;
 
   const created = await BaileysMessage.create({
@@ -161,13 +258,9 @@ async function saveIncomingMessage({ id, from, body, type, raw }) {
 
 // Wire up incoming messages from the service layer
 const socket = require('../services/socket');
-// We listen for the baileys_incoming_message socket event that baileysService fires
-// and persist it. Done here to avoid circular deps.
 (function wireIncoming() {
-  const { EventEmitter } = require('events');
   if (!global._baileysIncomingWired) {
     global._baileysIncomingWired = true;
-    // patch emitEvent so we can intercept baileys_incoming_message before it goes to WS
     const origEmit = socket.emitEvent;
     socket.emitEvent = function (event, data) {
       if (event === 'baileys_incoming_message') {
@@ -186,4 +279,6 @@ module.exports = {
   getConversation,
   markConversationRead,
   sendText,
+  getLogs,
+  sendInvitation,
 };
