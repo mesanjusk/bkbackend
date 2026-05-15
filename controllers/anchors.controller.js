@@ -1,5 +1,18 @@
 const Anchor = require('../models/Anchor');
 const BaileysMessage = require('../models/BaileysMessage');
+
+// GET /anchors (protected)
+async function getAnchors(req, res) {
+  try {
+    const docs = await Anchor.find()
+      .select('_id firstName lastName fullName gender age mobile language instructionsAccepted editToken createdAt')
+      .sort({ createdAt: -1 });
+    res.json(docs);
+  } catch (error) {
+    console.error('getAnchors error:', error);
+    res.status(500).json({ message: 'Failed to fetch anchors' });
+  }
+}
 const WhatsAppMessage = require('../models/WhatsAppMessage');
 const Notification = require('../models/Notification');
 const { emitEvent } = require('../services/socket');
@@ -260,4 +273,4 @@ async function putPublicEdit(req, res) {
   }
 }
 
-module.exports = { publicRegister, getPublicEdit, putPublicEdit };
+module.exports = { getAnchors, publicRegister, getPublicEdit, putPublicEdit };
