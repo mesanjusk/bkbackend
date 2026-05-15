@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { protect } = require('../middleware/auth');
-const { sendText, getRecipients, sendInvitation, getInbox, getConversation, markConversationRead, verifyWebhook, receiveWebhook } = require('../controllers/whatsappController');
+const { sendText, getRecipients, sendInvitation, getInbox, getConversation, markConversationRead, verifyWebhook, receiveWebhook, getGroups } = require('../controllers/whatsappController');
 const crudRoutes = require('./crudRoutes');
 router.get('/webhook', verifyWebhook);
 router.post('/webhook', receiveWebhook);
@@ -14,4 +14,5 @@ router.post('/conversation/:conversationKey/read', protect, markConversationRead
 router.get('/recipients', protect, getRecipients);
 router.post('/send-text', protect, sendText);
 router.post('/send-invitation', protect, sendInvitation);
+router.get('/groups', protect, getGroups);
 module.exports = router;

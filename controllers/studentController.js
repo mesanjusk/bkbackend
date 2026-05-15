@@ -295,6 +295,28 @@ async function queueStudentConfirmation(student, resolvedCategoryName = '') {
   }
 }
 
+async function sendStudentGroupNotification(student, categoryName) {
+  try {
+    const groupJid = await getSettingValue('student_registration_group_jid', '');
+    if (!groupJid) return;
+    const baileysStatus = baileysService.getStatus();
+    if (baileysStatus.status !== 'CONNECTED') return;
+    const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const percentageDisplay = student.percentage ? `${student.percentage}%` : 'N/A';
+    const message =
+      `🎓 *New Student Registration*\n` +
+      `*Name:* ${student.fullName}\n` +
+      `*Category:* ${categoryName || student.categoryOther || '-'}\n` +
+      `*School:* ${student.schoolName || '-'}\n` +
+      `*Percentage:* ${percentageDisplay}\n` +
+      `*Mobile:* ${student.mobile}\n` +
+      `*Time:* ${now}`;
+    await baileysService.sendText({ to: groupJid, body: message });
+  } catch (e) {
+    console.error('[sendStudentGroupNotification] error:', e.message);
+  }
+}
+
 // ── Public categories ─────────────────────────────────────────────────────────
 
 async function getPublicCategories(req, res) {
@@ -397,6 +419,8 @@ async function createPublicStudent(req, res) {
     queueStudentConfirmation(doc, categoryName).catch((e) =>
       console.error('[createPublicStudent] queueStudentConfirmation error:', e.message)
     );
+
+    sendStudentGroupNotification(doc, categoryName).catch(() => null);
 
     emitEvent('student_public_registered', { studentId: doc._id, fullName: doc.fullName });
 

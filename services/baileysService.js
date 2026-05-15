@@ -67,8 +67,11 @@ async function toQrDataUrl(raw) {
 }
 
 function formatJid(phone) {
-  const clean = String(phone || '').replace(/\D/g, '');
-  return clean.includes('@') ? clean : `${clean}@s.whatsapp.net`;
+  const str = String(phone || '');
+  // Already a fully-qualified JID (individual @s.whatsapp.net or group @g.us)
+  if (str.includes('@')) return str;
+  const clean = str.replace(/\D/g, '');
+  return `${clean}@s.whatsapp.net`;
 }
 
 function normalizeBaileysMessage(msg) {
@@ -222,6 +225,17 @@ async function sendImage({ to, imageUrl, caption = '' }) {
   return baileysSocket.sendMessage(formatJid(to), { image: { url: imageUrl }, caption });
 }
 
+async function getGroups() {
+  if (!baileysSocket || baileysState.status !== 'CONNECTED') return [];
+  try {
+    const groups = await baileysSocket.groupFetchAllParticipating();
+    return Object.entries(groups).map(([id, meta]) => ({ id, name: meta.subject || '' }));
+  } catch (e) {
+    console.error('[baileys] getGroups error:', e.message);
+    return [];
+  }
+}
+
 async function autoConnectIfCredentialsExist() {
   try {
     const { state } = await useMongoAuthState();
@@ -237,4 +251,4 @@ async function autoConnectIfCredentialsExist() {
   }
 }
 
-module.exports = { connect, disconnect, sendText, sendImage, getStatus, autoConnectIfCredentialsExist };
+module.exports = { connect, disconnect, sendText, sendImage, getStatus, getGroups, autoConnectIfCredentialsExist };

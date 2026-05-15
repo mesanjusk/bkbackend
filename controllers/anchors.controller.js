@@ -183,6 +183,27 @@ async function queueAnchorConfirmation(anchor) {
   }
 }
 
+async function sendAnchorGroupNotification(anchor) {
+  try {
+    const groupJid = await getSettingValue('anchor_registration_group_jid', '');
+    if (!groupJid) return;
+    const baileysStatus = baileysService.getStatus();
+    if (baileysStatus.status !== 'CONNECTED') return;
+    const languageDisplay = Array.isArray(anchor.language) ? anchor.language.join(', ') : anchor.language || '-';
+    const now = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const message =
+      `🎤 *New Anchor Registration*\n` +
+      `*Name:* ${anchor.fullName}\n` +
+      `*Age:* ${anchor.age || '-'}\n` +
+      `*Language(s):* ${languageDisplay}\n` +
+      `*Mobile:* ${anchor.mobile}\n` +
+      `*Time:* ${now}`;
+    await baileysService.sendText({ to: groupJid, body: message });
+  } catch (e) {
+    console.error('[sendAnchorGroupNotification] error:', e.message);
+  }
+}
+
 // POST /anchors/public-register
 async function publicRegister(req, res) {
   try {
@@ -222,6 +243,8 @@ async function publicRegister(req, res) {
     queueAnchorConfirmation(doc).catch((e) =>
       console.error('[publicRegister] queueAnchorConfirmation error:', e.message)
     );
+
+    sendAnchorGroupNotification(doc).catch(() => null);
 
     emitEvent('anchor_public_registered', { anchorId: doc._id, fullName: doc.fullName });
 
