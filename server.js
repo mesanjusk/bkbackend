@@ -58,6 +58,7 @@ app.use('/api/baileys',             require('./routes/baileysRoutes'));
 app.use('/api/uploads',             require('./routes/uploadRoutes'));
 app.use('/api/volunteers',          require('./routes/volunteerRoutes'));
 app.use('/api/system-settings',     require('./routes/systemSettingsRoutes'));
+app.use('/api/anchors',             require('./routes/anchors.routes'));
 
 
 async function startServer() {
