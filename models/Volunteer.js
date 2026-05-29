@@ -12,7 +12,8 @@ const volunteerSchema = new mongoose.Schema(
     teamOther: { type: String, default: '' },
     photoUrl: { type: String, default: '' },
     remarks: { type: String, default: '' },
-    source: { type: String, default: 'PUBLIC_FORM' }
+    source: { type: String, default: 'PUBLIC_FORM' },
+    whatsappConfirmationSentAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
