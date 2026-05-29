@@ -36,10 +36,6 @@ async function createPublicVolunteer(req, res) {
       return res.status(400).json({ message: 'First name, last name and mobile are required' });
     }
 
-    if (!teamId && !teamOther) {
-      return res.status(400).json({ message: 'Volunteer team category is required' });
-    }
-
     let resolvedTeamId = null;
     if (teamId) {
       if (!mongoose.Types.ObjectId.isValid(teamId)) {
