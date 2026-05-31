@@ -346,7 +346,7 @@ async function getStudents(req, res) {
   try {
     const docs = await Student.find()
       .populate('matchedCategoryIds')
-      .populate('categoryId')
+      .populate('categoryId', '_id title categoryType')
       .sort({ createdAt: -1 });
 
     res.json(docs);
@@ -367,7 +367,10 @@ async function createStudent(req, res) {
     const board   = getBoardFromCategory(category);
     const payload = normalizeStudentPayload(req.body, board);
 
-    const doc = await Student.create(payload);
+    const created = await Student.create(payload);
+    const doc = await Student.findById(created._id)
+      .populate('matchedCategoryIds')
+      .populate('categoryId', '_id title categoryType');
     emitEvent('student_form_submitted', { studentId: doc._id, fullName: doc.fullName });
 
     res.status(201).json(doc);
@@ -513,7 +516,7 @@ async function updateStudent(req, res) {
       runValidators: true
     })
       .populate('matchedCategoryIds')
-      .populate('categoryId');
+      .populate('categoryId', '_id title categoryType');
 
     if (!doc) return res.status(404).json({ message: 'Student not found' });
 
